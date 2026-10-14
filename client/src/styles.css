@@ -1,0 +1,152 @@
+:root {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #1a1a1a;
+}
+
+body {
+  margin: 0;
+  background: #f6f8fa;
+}
+
+.page {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+.org-header {
+  background: linear-gradient(90deg, var(--brand, #04bef1), var(--brand2, #048df1));
+  color: #fff;
+  padding: 1rem 1.25rem;
+  border-radius: 8px;
+}
+
+.org-header h1 {
+  margin: 0;
+}
+
+.tagline {
+  margin: 0.25rem 0 0;
+  opacity: 0.9;
+}
+
+.error {
+  background: #fdecea;
+  color: #8b1a1a;
+  padding: 0.75rem;
+  border-radius: 6px;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+  align-items: center;
+}
+
+input,
+select {
+  padding: 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 1rem;
+}
+
+input.wide {
+  flex: 1;
+  min-width: 260px;
+}
+
+button {
+  padding: 0.5rem 0.9rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 1rem;
+}
+
+button.selected {
+  background: var(--brand, #04bef1);
+  color: #fff;
+  border-color: var(--brand, #04bef1);
+}
+
+.list {
+  list-style: none;
+  padding: 0;
+}
+
+.list li {
+  padding: 0.4rem 0;
+  border-bottom: 1px solid #e5e5e5;
+}
+
+.cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+}
+
+.card {
+  min-width: 110px;
+  text-align: center;
+  padding: 0.75rem;
+}
+
+.score {
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.boxscore {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.boxscore th,
+.boxscore td {
+  border: 1px solid #ddd;
+  padding: 0.5rem;
+  text-align: left;
+}
+
+.yt-wrap {
+  position: relative;
+  width: 100%;
+  max-width: 720px;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.yt-player {
+  width: 100%;
+  height: 100%;
+}
+
+.yt-player iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.yt-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+}
+
+.yt-error {
+  max-width: 720px;
+  background: #fff3cd;
+  border: 1px solid #e6c200;
+  padding: 1rem;
+  border-radius: 8px;
+}
