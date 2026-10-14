@@ -1,0 +1,1 @@
+{"description":"SimpliGame — Simplify the Game. One app for live stats, film review, highlights, and recruiting.","engines":{"node":">=20"},"name":"simpligame","private":true,"scripts":{"build":"npm run build --workspaces","dev":"npm run dev --workspace=server","start":"npm run start --workspace=server"},"version":"0.1.0","workspaces":["client","server"]}
