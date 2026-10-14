@@ -1,0 +1,27 @@
+# SimpliGame — free-tier deployment (Render + Neon)
+#
+# Render runs the web service (free tier: sleeps after ~15 min idle,
+# ~1 min cold start on first request). Neon hosts the Postgres database
+# (free tier, permanent — this avoids Render's free Postgres, which is
+# deleted 30 days after creation).
+#
+# Setup:
+#  1. Create a free Neon project, copy its connection string.
+#  2. In Render, create a New Web Service from this repo (or apply this
+#     blueprint). Set the DATABASE_URL environment variable to the Neon
+#     connection string. Render sets PORT automatically.
+#  3. After the first deploy, run the migration in migrations/001_initial_schema.sql
+#     against the Neon database (e.g. with psql), then restart the service.
+
+services:
+  - type: web
+    name: simpligame
+    env: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
