@@ -165,4 +165,59 @@ export const api = {
     const data = await parseJson(await fetch(`/api/public/profile/${token}`));
     return data.profile as import('./types').PublicProfile;
   },
+
+  async listReels() {
+    const data = await parseJson(await fetch('/api/reels'));
+    return data.reels as import('./types').ReelProject[];
+  },
+
+  async createReel(body: { name?: string; game_id?: string | null; clips?: import('./types').ReelClip[]; music_track?: string }) {
+    const data = await parseJson(
+      await fetch('/api/reels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    );
+    return data.reel as import('./types').ReelProject;
+  },
+
+  async getReel(reelId: string) {
+    const data = await parseJson(await fetch(`/api/reels/${reelId}`));
+    return data.reel as import('./types').ReelProject;
+  },
+
+  async updateReel(
+    reelId: string,
+    body: { name?: string; clips?: import('./types').ReelClip[]; music_track?: string; status?: 'draft' | 'ready' },
+  ) {
+    const data = await parseJson(
+      await fetch(`/api/reels/${reelId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    );
+    return data.reel as import('./types').ReelProject;
+  },
+
+  async deleteReel(reelId: string) {
+    await parseJson(await fetch(`/api/reels/${reelId}`, { method: 'DELETE' }));
+  },
+
+  async autoReel(gameId: string, preset: 'hype' | 'clean' | 'simple') {
+    const data = await parseJson(
+      await fetch('/api/reels/auto', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gameId, preset }),
+      }),
+    );
+    return data.reel as import('./types').ReelProject;
+  },
+
+  async exportReel(reelId: string) {
+    const data = await parseJson(await fetch(`/api/reels/${reelId}/export`, { method: 'POST' }));
+    return data.export as { status: string; message: string };
+  },
 };
