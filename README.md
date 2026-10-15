@@ -73,6 +73,16 @@ npm run dev --workspace=@simpligame/client   # http://localhost:5173
   auto-aggregated career stats + per-game breakdown + highlight events
   with video-timestamp links, publish/unpublish/regenerate, unlisted
   token-only `/profile/<token>` page with Print / Save as PDF
+- Reel Studio: highlight reels from game events with video timestamps —
+  pick highlights, reorder clips, trim (start/end), per-clip transition
+  (cut/fade), text overlays, slow-motion toggle, placeholder music track
+  selection, preview (clips in sequence via YouTube embeds jumping to
+  each clip's timestamp), mock export (honestly labeled — no real MP4
+  yet). Projects persist server-side.
+- Auto Reel: one-tap on a game — builds a draft reel from that game's
+  scoring highlights best-first (Kills/Aces/Blocks, then Assists/Digs)
+  with a preset (transitions + overlays + placeholder music), opens in
+  Reel Studio for tweaking
 
 **Explicitly NOT in v1:** real auth/multi-coach logins, payments, real SMS
 (Twilio), real video rendering/clipping, AI stat analysis. Those arrive as
