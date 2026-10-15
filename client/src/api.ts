@@ -102,4 +102,24 @@ export const api = {
     );
     return data.game as Game;
   },
+
+  async publishGame(gameId: string) {
+    const data = await parseJson(await fetch(`/api/games/${gameId}/publish`, { method: 'POST' }));
+    return data as { game: Game; publicPath: string };
+  },
+
+  async unpublishGame(gameId: string) {
+    const data = await parseJson(await fetch(`/api/games/${gameId}/unpublish`, { method: 'POST' }));
+    return data.game as Game;
+  },
+
+  async revokeGameLink(gameId: string) {
+    const data = await parseJson(await fetch(`/api/games/${gameId}/revoke`, { method: 'POST' }));
+    return data as { game: Game; publicPath: string };
+  },
+
+  async getPublicWatch(token: string) {
+    const data = await parseJson(await fetch(`/api/public/watch/${token}`));
+    return data.watch as import('./types').PublicWatch;
+  },
 };
