@@ -910,6 +910,300 @@ app.get(
   }),
 );
 
+// ------------------------------------------- reel projects (Reel Studio)
+// Reel Studio + Auto Reel. A project is an ordered list of clips stored
+// as JSONB on reel_projects. Music tracks are placeholder names only —
+// no real audio files, no audio playback in this round. Export is a
+// mock: POST /:id/export returns an honest placeholder record, never a
+// real MP4. Real video rendering is a later production build.
+//
+// Clip shape: { eventId, gameId, videoId, startSeconds, endSeconds,
+//   transition: 'cut'|'fade', overlay, slowMo }.
+const REEL_CLIP_MAX = 50;
+const REEL_OVERLAY_MAX = 200;
+const REEL_SECONDS_MAX = 36000; // 10 hours — generous sanity cap
+
+// Built-in placeholder music tracks (names only, clearly labeled).
+const MUSIC_TRACKS = [
+  { id: 'none', name: 'No music' },
+  { id: 'hype-energy', name: 'Hype Energy (placeholder)' },
+  { id: 'pump-up', name: 'Pump Up (placeholder)' },
+  { id: 'chill-warmup', name: 'Chill Warm-Up (placeholder)' },
+  { id: 'cinematic', name: 'Cinematic (placeholder)' },
+];
+
+// Auto Reel presets: transitions + overlays + a placeholder music track.
+const AUTO_PRESETS = {
+  hype: { transition: 'fade', overlays: true, music: 'hype-energy' },
+  clean: { transition: 'cut', overlays: true, music: 'cinematic' },
+  simple: { transition: 'cut', overlays: false, music: 'none' },
+} as const;
+
+type AutoPresetName = keyof typeof AUTO_PRESETS;
+
+function cleanReelClip(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const c = value as Record<string, unknown>;
+  const start = Number(c.startSeconds);
+  const end = Number(c.endSeconds);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  if (start < 0 || end <= start || end > REEL_SECONDS_MAX) return null;
+  if (c.transition !== 'cut' && c.transition !== 'fade') return null;
+  if (typeof c.overlay !== 'string' || c.overlay.length > REEL_OVERLAY_MAX) return null;
+  if (typeof c.slowMo !== 'boolean') return null;
+  return {
+    eventId: typeof c.eventId === 'string' ? c.eventId : null,
+    gameId: typeof c.gameId === 'string' ? c.gameId : null,
+    videoId: typeof c.videoId === 'string' ? c.videoId : null,
+    startSeconds: start,
+    endSeconds: end,
+    transition: c.transition,
+    overlay: c.overlay,
+    slowMo: c.slowMo,
+  };
+}
+
+function cleanReelClips(value: unknown): Record<string, unknown>[] | null {
+  if (!Array.isArray(value)) return null;
+  if (value.length > REEL_CLIP_MAX) return null;
+  const cleaned: Record<string, unknown>[] = [];
+  for (const item of value) {
+    const clip = cleanReelClip(item);
+    if (!clip) return null;
+    cleaned.push(clip);
+  }
+  return cleaned;
+}
+
+async function getOrgReel(db: ReturnType<typeof getPool>, orgId: string, reelId: string) {
+  const reel = await db.query('SELECT * FROM reel_projects WHERE id = $1 AND org_id = $2', [
+    reelId,
+    orgId,
+  ]);
+  return reel.rows[0] ?? null;
+}
+
+app.get(
+  '/api/reels',
+  asyncHandler(async (_req, res) => {
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const result = await db.query(
+      'SELECT * FROM reel_projects WHERE org_id = $1 ORDER BY created_at DESC',
+      [org.id],
+    );
+    res.json({ ok: true, reels: result.rows });
+  }),
+);
+
+app.post(
+  '/api/reels',
+  asyncHandler(async (req, res) => {
+    const { name, game_id, clips, music_track } = req.body ?? {};
+    if (name !== undefined && (typeof name !== 'string' || !name.trim())) {
+      res.status(400).json({ ok: false, error: 'Reel name must be a non-empty string.' });
+      return;
+    }
+    if (name !== undefined && name.trim().length > 100) {
+      res.status(400).json({ ok: false, error: 'Reel name must be 100 characters or fewer.' });
+      return;
+    }
+    let cleanClips: Record<string, unknown>[] = [];
+    if (clips !== undefined) {
+      const cleaned = cleanReelClips(clips);
+      if (!cleaned) {
+        res.status(400).json({ ok: false, error: 'clips must be an array of valid clips.' });
+        return;
+      }
+      cleanClips = cleaned;
+    }
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const result = await db.query(
+      `INSERT INTO reel_projects (org_id, game_id, name, clips, music_track)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [
+        org.id,
+        typeof game_id === 'string' ? game_id : null,
+        name !== undefined ? name.trim() : 'Untitled reel',
+        JSON.stringify(cleanClips),
+        typeof music_track === 'string' ? music_track : '',
+      ],
+    );
+    res.status(201).json({ ok: true, reel: result.rows[0] });
+  }),
+);
+
+// Auto Reel: one-tap draft from a game's scoring highlights, best-first
+// (Kills/Aces/Blocks first, then Assists/Digs). The draft opens in Reel
+// Studio for tweaking — nothing here is final until the coach saves it.
+app.post(
+  '/api/reels/auto',
+  asyncHandler(async (req, res) => {
+    const { gameId, preset } = req.body ?? {};
+    if (typeof gameId !== 'string' || !gameId) {
+      res.status(400).json({ ok: false, error: 'gameId is required.' });
+      return;
+    }
+    const presetName: AutoPresetName =
+      preset === 'hype' || preset === 'clean' || preset === 'simple' ? preset : 'hype';
+    const presetConfig = AUTO_PRESETS[presetName];
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const game = await getOrgGame(db, org.id, gameId);
+    if (!game) {
+      res.status(404).json({ ok: false, error: 'Game not found.' });
+      return;
+    }
+    const team = await db.query('SELECT name FROM teams WHERE id = $1', [game.team_id]);
+    const events = await db.query(
+      `SELECT e.id, e.stat_type, e.video_seconds, p.name AS player_name
+       FROM game_events e
+       LEFT JOIN players p ON p.id = e.player_id
+       WHERE e.game_id = $1 AND e.player_id IS NOT NULL
+         AND e.stat_type IN ('Kill', 'Ace', 'Block', 'Assist', 'Dig')
+       ORDER BY e.created_at ASC`,
+      [gameId],
+    );
+    // Best-first: scoring plays (Kill/Ace/Block) before setup plays
+    // (Assist/Dig), stable within each group by event order.
+    const rank: Record<string, number> = { Kill: 0, Ace: 0, Block: 0, Assist: 1, Dig: 1 };
+    const sorted = [...events.rows].sort(
+      (a, b) => (rank[a.stat_type] ?? 2) - (rank[b.stat_type] ?? 2),
+    );
+    const clips = sorted.map((e) => ({
+      eventId: e.id,
+      gameId,
+      videoId: game.youtube_video_id ?? null,
+      startSeconds: Math.max(0, Number(e.video_seconds) - 2),
+      endSeconds: Number(e.video_seconds) + 8,
+      transition: presetConfig.transition,
+      overlay: presetConfig.overlays ? `${e.player_name ?? 'Player'} — ${e.stat_type}` : '',
+      slowMo: false,
+    }));
+    const name = `Auto reel — ${team.rows[0]?.name ?? 'Team'} vs ${game.opponent || 'TBD'}`;
+    const result = await db.query(
+      `INSERT INTO reel_projects (org_id, game_id, name, clips, music_track, status)
+       VALUES ($1, $2, $3, $4, $5, 'draft') RETURNING *`,
+      [org.id, gameId, name, JSON.stringify(clips), presetConfig.music],
+    );
+    res.status(201).json({ ok: true, reel: result.rows[0] });
+  }),
+);
+
+app.get(
+  '/api/reels/:id',
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const reel = await getOrgReel(db, org.id, String(req.params.id));
+    if (!reel) {
+      res.status(404).json({ ok: false, error: 'Reel not found.' });
+      return;
+    }
+    res.json({ ok: true, reel });
+  }),
+);
+
+app.patch(
+  '/api/reels/:id',
+  asyncHandler(async (req, res) => {
+    const { name, clips, music_track, status } = req.body ?? {};
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const reelId = String(req.params.id);
+    const reel = await getOrgReel(db, org.id, reelId);
+    if (!reel) {
+      res.status(404).json({ ok: false, error: 'Reel not found.' });
+      return;
+    }
+    const sets: string[] = [];
+    const values: unknown[] = [];
+    if (name !== undefined) {
+      if (typeof name !== 'string' || !name.trim() || name.trim().length > 100) {
+        res.status(400).json({ ok: false, error: 'Reel name must be a non-empty string of 100 characters or fewer.' });
+        return;
+      }
+      values.push(name.trim());
+      sets.push(`name = $${values.length}`);
+    }
+    if (clips !== undefined) {
+      const cleaned = cleanReelClips(clips);
+      if (!cleaned) {
+        res.status(400).json({ ok: false, error: 'clips must be an array of valid clips.' });
+        return;
+      }
+      values.push(JSON.stringify(cleaned));
+      sets.push(`clips = $${values.length}`);
+    }
+    if (music_track !== undefined) {
+      if (typeof music_track !== 'string') {
+        res.status(400).json({ ok: false, error: 'music_track must be a string.' });
+        return;
+      }
+      values.push(music_track);
+      sets.push(`music_track = $${values.length}`);
+    }
+    if (status !== undefined) {
+      if (status !== 'draft' && status !== 'ready') {
+        res.status(400).json({ ok: false, error: "status must be 'draft' or 'ready'." });
+        return;
+      }
+      values.push(status);
+      sets.push(`status = $${values.length}`);
+    }
+    if (sets.length === 0) {
+      res.json({ ok: true, reel });
+      return;
+    }
+    values.push(reelId);
+    const result = await db.query(
+      `UPDATE reel_projects SET ${sets.join(', ')}, updated_at = now() WHERE id = $${values.length} RETURNING *`,
+      values,
+    );
+    res.json({ ok: true, reel: result.rows[0] });
+  }),
+);
+
+app.delete(
+  '/api/reels/:id',
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const reelId = String(req.params.id);
+    const reel = await getOrgReel(db, org.id, reelId);
+    if (!reel) {
+      res.status(404).json({ ok: false, error: 'Reel not found.' });
+      return;
+    }
+    await db.query('DELETE FROM reel_projects WHERE id = $1', [reelId]);
+    res.json({ ok: true, deleted: true });
+  }),
+);
+
+// Mock export: honest placeholder. There is no real MP4 rendering in this
+// build — the export endpoint says so plainly instead of pretending.
+app.post(
+  '/api/reels/:id/export',
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const reel = await getOrgReel(db, org.id, String(req.params.id));
+    if (!reel) {
+      res.status(404).json({ ok: false, error: 'Reel not found.' });
+      return;
+    }
+    res.json({
+      ok: true,
+      export: {
+        status: 'mock',
+        message:
+          'This is a placeholder export, not a real video file. Real MP4 rendering comes in a later production build — your reel project (clips, order, trim, overlays, music) is saved and ready for it.',
+      },
+    });
+  }),
+);
+
 // ------------------------------------------- static client (production)
 // In production the client build (client/dist) is served by this server,
 // so one Render web service hosts the whole app.
