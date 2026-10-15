@@ -473,6 +473,70 @@ app.get(
   }),
 );
 
+// -------------------------------------------------------- game status
+// Status transitions: draft → live ("Go Live"), live → final ("End
+// Game"). Anything else is a 400 with a plain explanation — a final game
+// is done, and a draft must go live before it can be ended. The
+// transition is recorded as a game_event (stat_type 'Game started' /
+// 'Game ended', player_id NULL) so it shows in the timeline and the
+// public watch feed, and status + event land in one transaction. The
+// stat_type values follow the existing Title Case phrase convention
+// ('Opponent point', 'Attack attempt', …) and never touch player stats,
+// because player aggregation filters on player_id.
+app.patch(
+  '/api/games/:gameId/status',
+  asyncHandler(async (req, res) => {
+    const { status } = req.body ?? {};
+    if (status !== 'draft' && status !== 'live' && status !== 'final') {
+      res.status(400).json({ ok: false, error: "status must be 'draft', 'live', or 'final'." });
+      return;
+    }
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const game = await getOrgGame(db, org.id, String(req.params.gameId));
+    if (!game) {
+      res.status(404).json({ ok: false, error: 'Game not found.' });
+      return;
+    }
+    const current = game.status as 'draft' | 'live' | 'final';
+    const allowed: Record<string, string[]> = { draft: ['live'], live: ['final'], final: [] };
+    if (current === status) {
+      res.status(400).json({ ok: false, error: `This game is already ${current}.` });
+      return;
+    }
+    if (!allowed[current].includes(status)) {
+      const reason =
+        current === 'final'
+          ? 'This game is already final — its status can no longer change.'
+          : current === 'draft'
+            ? 'A game must go live before it can be ended — go live first.'
+            : 'A live game can only be ended, not sent back to draft.';
+      res.status(400).json({ ok: false, error: reason });
+      return;
+    }
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      const updated = await client.query('UPDATE games SET status = $1 WHERE id = $2 RETURNING *', [
+        status,
+        game.id,
+      ]);
+      await client.query(
+        `INSERT INTO game_events (game_id, player_id, stat_type, side, points, video_seconds, entry_method)
+         VALUES ($1, NULL, $2, 'ours', 0, 0, 'live')`,
+        [game.id, status === 'live' ? 'Game started' : 'Game ended'],
+      );
+      await client.query('COMMIT');
+      res.json({ ok: true, game: updated.rows[0] });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }),
+);
+
 // ------------------------------------------------------------ stat events
 // The core loop: tap a player, tap a stat, the event lands with a score
 // update in the same transaction so the two can never drift apart.
@@ -536,6 +600,11 @@ app.post(
 );
 
 // Undo: remove the game's most recent event and reverse its score effect.
+// When the most recent event is a Substitution recorded with
+// out_player_id (migration 005), the lineup swap is reversed too — the
+// out-player returns to the slot and the in-player returns to the bench —
+// in the same transaction. Subs recorded before 005 have out_player_id
+// NULL and fall back to deleting the event only.
 app.post(
   '/api/games/:gameId/undo',
   asyncHandler(async (req, res) => {
@@ -572,6 +641,16 @@ app.post(
           req.params.gameId,
         ]);
       }
+      // Reverse a Substitution: the in-player (event.player_id) leaves
+      // the slot and the out-player takes it back. If the in-player is
+      // somehow no longer on the court, the swap is skipped rather than
+      // failing the whole undo — the event is already deleted above.
+      if (event.stat_type === 'Substitution' && event.out_player_id && event.player_id) {
+        await client.query(
+          'UPDATE lineups SET player_id = $1 WHERE game_id = $2 AND player_id = $3',
+          [event.out_player_id, req.params.gameId, event.player_id],
+        );
+      }
       await client.query('COMMIT');
       res.json({ ok: true, undone: event });
     } catch (err) {
@@ -586,14 +665,9 @@ app.post(
 // ------------------------------------------------------------ substitution
 // Swap a bench player onto the court. The in-player takes the out-player's
 // slot so slot numbers stay stable. Recorded as a game_event (stat_type
-// 'Substitution', player_id = the player coming in) so it shows in the
-// timeline. Lineup swap + event land in one transaction.
-//
-// Known limitation: undo removes the most recent event but does not
-// reverse a lineup swap — undoing a Substitution event clears it from the
-// timeline while the swapped lineup stays. Reversing a sub from the event
-// alone is impossible (events carry one player_id), so a full sub-undo
-// needs a dedicated endpoint; that is a follow-up.
+// 'Substitution', player_id = the player coming in, out_player_id = the
+// player going out) so it shows in the timeline and undo can reverse the
+// swap. Lineup swap + event land in one transaction.
 app.post(
   '/api/games/:gameId/sub',
   asyncHandler(async (req, res) => {
@@ -664,9 +738,9 @@ app.post(
         outPlayerId,
       ]);
       const event = await client.query(
-        `INSERT INTO game_events (game_id, player_id, stat_type, side, points, video_seconds, entry_method)
-         VALUES ($1, $2, 'Substitution', 'ours', 0, 0, 'live') RETURNING *`,
-        [req.params.gameId, inPlayerId],
+        `INSERT INTO game_events (game_id, player_id, stat_type, side, points, video_seconds, entry_method, out_player_id)
+         VALUES ($1, $2, 'Substitution', 'ours', 0, 0, 'live', $3) RETURNING *`,
+        [req.params.gameId, inPlayerId, outPlayerId],
       );
       await client.query('COMMIT');
       res.json({ ok: true, event: event.rows[0] });
