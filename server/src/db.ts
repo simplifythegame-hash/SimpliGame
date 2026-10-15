@@ -43,7 +43,7 @@ export async function getOrCreateOrganization() {
   const created = await db.query(
     `INSERT INTO organizations (name, primary_color, secondary_color)
      VALUES ($1, $2, $3) RETURNING *`,
-    ['My Organization', '#04BEF1', '#048DF1'],
+    ['NWA Llamas', '#04BEF1', '#048DF1'],
   );
   return created.rows[0];
 }
