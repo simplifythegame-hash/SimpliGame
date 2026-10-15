@@ -70,6 +70,28 @@ export const api = {
     await parseJson(await fetch(`/api/games/${gameId}/undo`, { method: 'POST' }));
   },
 
+  async renameOrganization(name: string) {
+    const data = await parseJson(
+      await fetch('/api/organization', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      }),
+    );
+    return data.organization as import('./types').Organization;
+  },
+
+  async sub(gameId: string, outPlayerId: string, inPlayerId: string) {
+    const data = await parseJson(
+      await fetch(`/api/games/${gameId}/sub`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ outPlayerId, inPlayerId }),
+      }),
+    );
+    return data.event as GameEvent;
+  },
+
   async saveYouTube(gameId: string, url: string) {
     const data = await parseJson(
       await fetch(`/api/games/${gameId}/youtube`, {
