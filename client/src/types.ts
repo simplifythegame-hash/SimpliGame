@@ -33,6 +33,8 @@ export interface Game {
   our_score: number;
   opponent_score: number;
   period_label: string;
+  publish_token: string | null;
+  published: boolean;
 }
 
 export interface GameEvent {
@@ -61,4 +63,36 @@ export interface Workspace {
   games: Game[];
   events: GameEvent[];
   lineups: LineupRow[];
+}
+
+/** Public watch payload: ONLY the published game's surface. No rosters,
+ *  no other games, no org details, no internal IDs. */
+export interface PublicWatchEvent {
+  player_name: string | null;
+  jersey_number: string | null;
+  stat_type: string;
+  side: 'ours' | 'opponent';
+  points: number;
+  created_at: string;
+}
+
+export interface PublicWatchBoxRow {
+  name: string;
+  jersey_number: string;
+  points: number;
+  stats: Record<string, number>;
+}
+
+export interface PublicWatch {
+  team_name: string;
+  opponent: string;
+  sport: string;
+  mode: string;
+  status: string;
+  period_label: string;
+  our_score: number;
+  opponent_score: number;
+  youtube_video_id: string | null;
+  events: PublicWatchEvent[];
+  boxScore: PublicWatchBoxRow[];
 }
