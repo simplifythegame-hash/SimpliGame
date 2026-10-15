@@ -41,6 +41,10 @@ export interface GameEvent {
   id: string;
   game_id: string;
   player_id: string | null;
+  // Set only on Substitution events (migration 005): the player who went
+  // out, so undo can reverse the lineup swap. Null on all other events
+  // and on subs recorded before 005.
+  out_player_id: string | null;
   stat_type: string;
   side: 'ours' | 'opponent';
   points: number;
