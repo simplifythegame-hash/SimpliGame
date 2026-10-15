@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import express from 'express';
 import path from 'path';
 import { getOrCreateOrganization, getPool } from './db';
@@ -477,6 +478,158 @@ app.post(
       return;
     }
     res.json({ ok: true, game: result.rows[0] });
+  }),
+);
+
+// ------------------------------------------------- publishing (coach)
+// Unlisted watch links: a game is public only when published = true AND
+// the caller presents the exact token. Publish reuses an existing token
+// (or mints one); revoke mints a fresh token so the old link dies while
+// the published flag stays as-is. All three are coach-side (org-scoped).
+async function getOrgGame(db: ReturnType<typeof getPool>, orgId: string, gameId: string) {
+  const game = await db.query(
+    `SELECT g.* FROM games g JOIN teams t ON t.id = g.team_id
+     WHERE t.org_id = $1 AND g.id = $2`,
+    [orgId, gameId],
+  );
+  return game.rows[0] ?? null;
+}
+
+// 64 hex chars from 32 random bytes — unguessable, no sequential IDs.
+function newPublishToken() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+app.post(
+  '/api/games/:gameId/publish',
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    // :gameId is always a single segment; String() normalizes Express 5's
+    // `string | string[]` param type for the typed helper below.
+    const gameId = String(req.params.gameId);
+    const game = await getOrgGame(db, org.id, gameId);
+    if (!game) {
+      res.status(404).json({ ok: false, error: 'Game not found.' });
+      return;
+    }
+    const token = game.publish_token ?? newPublishToken();
+    const result = await db.query(
+      'UPDATE games SET publish_token = $1, published = true WHERE id = $2 RETURNING *',
+      [token, gameId],
+    );
+    res.json({ ok: true, game: result.rows[0], publicPath: `/watch/${token}` });
+  }),
+);
+
+app.post(
+  '/api/games/:gameId/unpublish',
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const gameId = String(req.params.gameId);
+    const game = await getOrgGame(db, org.id, gameId);
+    if (!game) {
+      res.status(404).json({ ok: false, error: 'Game not found.' });
+      return;
+    }
+    const result = await db.query('UPDATE games SET published = false WHERE id = $1 RETURNING *', [
+      gameId,
+    ]);
+    res.json({ ok: true, game: result.rows[0] });
+  }),
+);
+
+app.post(
+  '/api/games/:gameId/revoke',
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const gameId = String(req.params.gameId);
+    const game = await getOrgGame(db, org.id, gameId);
+    if (!game) {
+      res.status(404).json({ ok: false, error: 'Game not found.' });
+      return;
+    }
+    const token = newPublishToken();
+    const result = await db.query('UPDATE games SET publish_token = $1 WHERE id = $2 RETURNING *', [
+      token,
+      gameId,
+    ]);
+    res.json({ ok: true, game: result.rows[0], publicPath: `/watch/${token}` });
+  }),
+);
+
+// ------------------------------------------------- public watch (no auth)
+// Serves ONLY the exact token. Bad tokens, revoked tokens, and
+// unpublished games all get the identical generic 404 — the response
+// never reveals which case it is. The payload exposes ONLY this game's
+// public surface: team name, opponent, score, stream, event feed, and
+// per-player scoring stats for this game. No rosters, no other games,
+// no org details, no internal IDs.
+app.get(
+  '/api/public/watch/:token',
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const game = await db.query(
+      `SELECT g.id, g.opponent, g.sport, g.mode, g.status, g.period_label,
+              g.our_score, g.opponent_score, g.youtube_video_id,
+              t.name AS team_name
+       FROM games g JOIN teams t ON t.id = g.team_id
+       WHERE g.publish_token = $1 AND g.published = true`,
+      [req.params.token],
+    );
+    if (game.rows.length === 0) {
+      res.status(404).json({ ok: false, error: 'Game not found.' });
+      return;
+    }
+    const g = game.rows[0];
+    const events = await db.query(
+      `SELECT e.stat_type, e.side, e.points, e.created_at,
+              p.name AS player_name, p.jersey_number
+       FROM game_events e
+       LEFT JOIN players p ON p.id = e.player_id
+       WHERE e.game_id = $1
+       ORDER BY e.created_at DESC, e.id DESC`,
+      [g.id],
+    );
+    // Box score: per-player scoring stats for THIS game only. Players
+    // appear here only because they have events in this game's feed.
+    const boxByName = new Map<
+      string,
+      { name: string; jersey_number: string; points: number; stats: Record<string, number> }
+    >();
+    for (const e of events.rows) {
+      if (!e.player_name) continue;
+      let entry = boxByName.get(e.player_name);
+      if (!entry) {
+        entry = {
+          name: e.player_name,
+          jersey_number: e.jersey_number ?? '',
+          points: 0,
+          stats: {},
+        };
+        boxByName.set(e.player_name, entry);
+      }
+      entry.stats[e.stat_type] = (entry.stats[e.stat_type] ?? 0) + 1;
+      entry.points += e.points;
+    }
+    res.json({
+      ok: true,
+      watch: {
+        team_name: g.team_name,
+        opponent: g.opponent,
+        sport: g.sport,
+        mode: g.mode,
+        status: g.status,
+        period_label: g.period_label,
+        our_score: g.our_score,
+        opponent_score: g.opponent_score,
+        youtube_video_id: g.youtube_video_id,
+        events: events.rows,
+        boxScore: [...boxByName.values()],
+      },
+    });
   }),
 );
 
