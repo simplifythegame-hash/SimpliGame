@@ -129,6 +129,34 @@ export interface PlayerProfileStats {
   }[];
 }
 
+/** Reel Studio: one clip in a reel project. startSeconds/endSeconds are
+ *  trim offsets into the clip's video. Music is a placeholder track name
+ *  only — no real audio in this round. */
+export interface ReelClip {
+  eventId: string | null;
+  gameId: string | null;
+  videoId: string | null;
+  startSeconds: number;
+  endSeconds: number;
+  transition: 'cut' | 'fade';
+  overlay: string;
+  slowMo: boolean;
+}
+
+/** Reel project: ordered clips + music + status. Export is a mock in
+ *  this build — real MP4 rendering is a later production build. */
+export interface ReelProject {
+  id: string;
+  org_id: string;
+  game_id: string | null;
+  name: string;
+  clips: ReelClip[];
+  music_track: string;
+  status: 'draft' | 'ready';
+  created_at: string;
+  updated_at: string;
+}
+
 /** Public profile payload: ONLY this player's surface. No roster,
  *  no other players, no org details, no internal IDs. */
 export interface PublicProfile {
