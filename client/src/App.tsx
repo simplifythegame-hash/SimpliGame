@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from './api';
-import type { Game, Player, Workspace } from './types';
+import type { Game, Player, PublicWatch, Workspace } from './types';
 import YouTubePlayer from './components/YouTubePlayer';
 import './styles.css';
 
@@ -20,6 +20,16 @@ const STAT_BUTTONS: { label: string; points: number }[] = [
 type View = { kind: 'home' } | { kind: 'live'; gameId: string } | { kind: 'detail'; gameId: string };
 
 export default function App() {
+  // Public watch route: /watch/<token> renders the standalone watch page
+  // INSTEAD of the app shell — no nav, no login, no editing, and no
+  // workspace fetch. The pathname never changes during a page load, so
+  // this early return is stable across renders.
+  const watchMatch =
+    typeof window !== 'undefined' ? window.location.pathname.match(/^\/watch\/([^/]+)$/) : null;
+  if (watchMatch) {
+    return <WatchPage token={watchMatch[1]} />;
+  }
+
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [view, setView] = useState<View>({ kind: 'home' });
   const [selectedTeamId, setSelectedTeamId] = useState<string>('');
@@ -280,6 +290,21 @@ export default function App() {
               setYoutubeUrl('');
             });
           }}
+          onPublish={async () => {
+            await run(async () => {
+              await api.publishGame(currentGame.id);
+            });
+          }}
+          onUnpublish={async () => {
+            await run(async () => {
+              await api.unpublishGame(currentGame.id);
+            });
+          }}
+          onRevoke={async () => {
+            await run(async () => {
+              await api.revokeGameLink(currentGame.id);
+            });
+          }}
           onBack={() => setView({ kind: 'home' })}
           onLive={() => setView({ kind: 'live', gameId: currentGame.id })}
         />
@@ -452,10 +477,14 @@ function GameDetailScreen(props: {
   youtubeUrl: string;
   onYoutubeUrlChange: (v: string) => void;
   onSaveYouTube: () => void;
+  onPublish: () => void;
+  onUnpublish: () => void;
+  onRevoke: () => void;
   onBack: () => void;
   onLive: () => void;
 }) {
   // Box score: per-player counts by stat type, plus points.
+  const [copied, setCopied] = useState(false);
   const boxScore = useMemo(() => {
     const byPlayer = new Map<string, { name: string; stats: Record<string, number>; points: number }>();
     for (const e of props.events) {
@@ -499,6 +528,50 @@ function GameDetailScreen(props: {
         <p>No video attached yet.</p>
       )}
 
+      <h3>Watch link</h3>
+      {props.game.published && props.game.publish_token ? (
+        <>
+          <p>Published — anyone with the link can watch this game live. No login needed.</p>
+          <div className="row">
+            <input
+              readOnly
+              value={`${window.location.origin}/watch/${props.game.publish_token}`}
+              className="wide"
+              onFocus={(e) => e.target.select()}
+            />
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(
+                    `${window.location.origin}/watch/${props.game.publish_token}`,
+                  );
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                } catch {
+                  // Clipboard unavailable — the input above is selected on
+                  // focus, so the coach can copy it manually.
+                }
+              }}
+            >
+              {copied ? 'Copied!' : 'Copy link'}
+            </button>
+          </div>
+          <div className="row">
+            <button onClick={props.onUnpublish}>Unpublish</button>
+            <button onClick={props.onRevoke}>Regenerate link</button>
+          </div>
+          <p>
+            <small>Regenerating the link kills the old one — anyone with the old link can no longer watch.</small>
+          </p>
+        </>
+      ) : (
+        <>
+          <p>Not published — the watch link only works after you publish this game.</p>
+          <button onClick={props.onPublish}>Publish watch link</button>
+        </>
+      )}
+
       <h3>Box score</h3>
       {boxScore.length === 0 ? (
         <p>No events logged yet.</p>
@@ -536,5 +609,131 @@ function GameDetailScreen(props: {
         })}
       </ul>
     </section>
+  );
+}
+
+/**
+ * Public watch page — the ONLY thing a /watch/<token> link renders.
+ * Standalone: no app nav, no login, no editing, no workspace fetch.
+ * Shows only the published game: live score, stream embed, event feed,
+ * and per-player scoring stats for this game. Polls the public endpoint
+ * every 15s so family sees score updates without reloading. A failed
+ * first load means the link is bad, revoked, or unpublished — all three
+ * look identical by design, so the message never says which.
+ */
+function WatchPage({ token }: { token: string }) {
+  const [watch, setWatch] = useState<PublicWatch | null>(null);
+  const [notFound, setNotFound] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let hasLoaded = false;
+    async function load() {
+      try {
+        const w = await api.getPublicWatch(token);
+        if (cancelled) return;
+        hasLoaded = true;
+        setWatch(w);
+        setNotFound(false);
+      } catch {
+        // Poll failures after a successful load leave the last good
+        // state in place — only a failed FIRST load shows the message.
+        if (!cancelled && !hasLoaded) setNotFound(true);
+      }
+    }
+    load();
+    const interval = setInterval(load, 15_000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [token]);
+
+  if (notFound) {
+    return (
+      <div className="page">
+        <header className="org-header">
+          <h1>SimpliGame</h1>
+        </header>
+        <h2>This game isn&rsquo;t published.</h2>
+        <p>
+          The link may be mistyped, the game may not be published yet, or the coach may have shared a
+          new link. Ask the coach for the current watch link.
+        </p>
+      </div>
+    );
+  }
+
+  if (!watch) {
+    return (
+      <div className="page">
+        <p>Loading game…</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="page">
+      <header className="org-header">
+        <h1>SimpliGame</h1>
+        <p className="tagline">Live game</p>
+      </header>
+
+      <h2>
+        {watch.team_name} vs {watch.opponent || 'TBD'}
+      </h2>
+      <p className="score">
+        {watch.team_name} {watch.our_score} — {watch.opponent_score} {watch.opponent || 'Opponent'}
+      </p>
+      <p>
+        {watch.period_label} · {watch.status === 'live' ? 'Live now' : watch.status === 'final' ? 'Final' : 'Upcoming'}
+      </p>
+
+      {watch.youtube_video_id ? (
+        <YouTubePlayer videoId={watch.youtube_video_id} isLive={watch.status === 'live'} />
+      ) : (
+        <p>No stream attached to this game yet.</p>
+      )}
+
+      <h3>Box score</h3>
+      {watch.boxScore.length === 0 ? (
+        <p>No scoring stats yet.</p>
+      ) : (
+        <table className="boxscore">
+          <thead>
+            <tr>
+              <th>Player</th>
+              <th>Points</th>
+              <th>Stats</th>
+            </tr>
+          </thead>
+          <tbody>
+            {watch.boxScore.map((row) => (
+              <tr key={row.name}>
+                <td>
+                  #{row.jersey_number} {row.name}
+                </td>
+                <td>{row.points}</td>
+                <td>{Object.entries(row.stats).map(([k, v]) => `${k}: ${v}`).join(' · ')}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <h3>Event feed</h3>
+      {watch.events.length === 0 ? (
+        <p>No events yet.</p>
+      ) : (
+        <ul className="list">
+          {watch.events.slice(0, 30).map((e, i) => (
+            <li key={i}>
+              {e.player_name ? `#${e.jersey_number} ${e.player_name}` : 'Opponent'} — {e.stat_type}
+              {e.points > 0 ? ` (+${e.points})` : ''} · {new Date(e.created_at).toLocaleTimeString()}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
