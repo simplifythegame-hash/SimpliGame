@@ -8,6 +8,85 @@ async function parseJson(res: Response) {
   return data;
 }
 
+/** A fetch rejection means the request never reached the server (offline,
+ *  DNS, dropped connection) — as opposed to an HTTP error, which parseJson
+ *  turns into an Error above. */
+function isNetworkFailure(err: unknown) {
+  return err instanceof TypeError;
+}
+
+// ------------------------------------------- offline queue (stat events)
+// When a stat-event POST fails because the device is offline, the event
+// is stashed in localStorage and retried in order when the connection
+// returns (on the 'online' event and on page load). The service worker
+// never caches or replays mutations — this client-side queue is the one
+// retry path, so events can't be sent twice by two mechanisms.
+//
+// Queue entries are the exact logEvent bodies; replay preserves order
+// (a failed replay stops the drain so later events can't overtake it).
+const QUEUE_KEY = 'simpligame:offline-queue';
+
+type QueuedEvent = { gameId: string; body: { player_id: string | null; stat_type: string; side: 'ours' | 'opponent'; points: number; video_seconds: number } };
+
+function readQueue(): QueuedEvent[] {
+  try {
+    const raw = localStorage.getItem(QUEUE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeQueue(queue: QueuedEvent[]) {
+  try {
+    localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
+  } catch {
+    // Storage full or unavailable — the event is lost rather than
+    // crashing the app; the coach sees the error state.
+  }
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('simpligame:queue-changed', { detail: { count: queue.length } }),
+    );
+  }
+}
+
+function enqueueEvent(entry: QueuedEvent) {
+  const queue = readQueue();
+  queue.push(entry);
+  writeQueue(queue);
+}
+
+async function drainQueue() {
+  let queue = readQueue();
+  while (queue.length > 0) {
+    const [head, ...rest] = queue;
+    try {
+      const res = await fetch(`/api/games/${head.gameId}/events`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(head.body),
+      });
+      await parseJson(res);
+      queue = rest;
+      writeQueue(queue);
+    } catch {
+      // Still offline or the server rejected it — stop here to preserve
+      // order; the next 'online' event retries.
+      return;
+    }
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('online', () => {
+    void drainQueue();
+  });
+  // A reload after a crash or a closed tab retries anything still queued.
+  void drainQueue();
+}
+
 export const api = {
   async getWorkspace() {
     const data = await parseJson(await fetch('/api/workspace'));
@@ -56,14 +135,40 @@ export const api = {
     gameId: string,
     body: { player_id: string | null; stat_type: string; side: 'ours' | 'opponent'; points: number; video_seconds: number },
   ) {
+    try {
+      const data = await parseJson(
+        await fetch(`/api/games/${gameId}/events`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }),
+      );
+      return data.event as GameEvent;
+    } catch (err) {
+      // Offline: stash the event for automatic retry instead of losing
+      // the stat. The caller checks `queued` and skips its refresh.
+      if (isNetworkFailure(err)) {
+        enqueueEvent({ gameId, body });
+        return { queued: true } as { queued: true };
+      }
+      throw err;
+    }
+  },
+
+  /** How many stat events are waiting to sync (0 when fully synced). */
+  getQueuedEventCount() {
+    return readQueue().length;
+  },
+
+  async setGameStatus(gameId: string, status: 'draft' | 'live' | 'final') {
     const data = await parseJson(
-      await fetch(`/api/games/${gameId}/events`, {
-        method: 'POST',
+      await fetch(`/api/games/${gameId}/status`, {
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ status }),
       }),
     );
-    return data.event as GameEvent;
+    return data.game as Game;
   },
 
   async undo(gameId: string) {
