@@ -34,6 +34,8 @@ export default function App() {
   const [opponent, setOpponent] = useState('');
   const [mode, setMode] = useState<'live' | 'film'>('live');
   const [youtubeUrl, setYoutubeUrl] = useState('');
+  const [editingOrg, setEditingOrg] = useState(false);
+  const [orgName, setOrgName] = useState('');
 
   const refresh = useCallback(async () => {
     const ws = await api.getWorkspace();
@@ -130,7 +132,45 @@ export default function App() {
   return (
     <div className="page" style={{ ['--brand' as string]: org.primary_color, ['--brand2' as string]: org.secondary_color }}>
       <header className="org-header">
-        <h1>{org.name}</h1>
+        {editingOrg ? (
+          <form
+            className="row"
+            onSubmit={(e) => {
+              e.preventDefault();
+              run(async () => {
+                await api.renameOrganization(orgName);
+                setEditingOrg(false);
+              });
+            }}
+          >
+            <input
+              value={orgName}
+              onChange={(e) => setOrgName(e.target.value)}
+              placeholder="Organization name"
+              maxLength={100}
+              required
+              autoFocus
+            />
+            <button type="submit">Save</button>
+            <button type="button" onClick={() => setEditingOrg(false)}>
+              Cancel
+            </button>
+          </form>
+        ) : (
+          <h1>
+            {org.name}{' '}
+            <button
+              className="org-edit-btn"
+              aria-label="Rename organization"
+              onClick={() => {
+                setOrgName(org.name);
+                setEditingOrg(true);
+              }}
+            >
+              ✏️
+            </button>
+          </h1>
+        )}
         <p className="tagline">SimpliGame — Simplify the Game</p>
       </header>
 
@@ -214,6 +254,14 @@ export default function App() {
           onLogEvent={handleLogEvent}
           onOpponentScores={handleOpponentScores}
           onUndo={async () => run(() => api.undo(currentGame.id))}
+          onSub={async (outPlayerId, inPlayerId) => {
+            await run(async () => {
+              await api.sub(currentGame.id, outPlayerId, inPlayerId);
+            });
+            // The tagged player may now be on the bench — clear the
+            // selection so stats can't be tagged to a benched player.
+            setSelectedPlayerId(null);
+          }}
           onBack={() => setView({ kind: 'home' })}
           onDetail={() => setView({ kind: 'detail', gameId: currentGame.id })}
         />
@@ -250,6 +298,7 @@ function LiveGameScreen(props: {
   onLogEvent: (stat: { label: string; points: number }) => void;
   onOpponentScores: () => void;
   onUndo: () => void;
+  onSub: (outPlayerId: string, inPlayerId: string) => Promise<void>;
   onBack: () => void;
   onDetail: () => void;
 }) {
@@ -258,7 +307,32 @@ function LiveGameScreen(props: {
   const onCourt = props.lineupPlayerIds.length > 0
     ? props.lineupPlayerIds.map((id) => props.players.find((p) => p.id === id)).filter((p): p is Player => !!p)
     : props.players.slice(0, 6);
+  const onCourtIds = new Set(onCourt.map((p) => p.id));
+  // Bench: everyone on the roster who is not currently on the court.
+  const bench = props.players.filter((p) => !onCourtIds.has(p.id));
   const selected = props.players.find((p) => p.id === props.selectedPlayerId);
+
+  // Sub flow state: tap Sub, tap the on-court player going out, tap the
+  // bench player coming in, confirm. The lineup itself always comes from
+  // the server (workspace.lineups), so a refresh keeps the current lineup.
+  const [subMode, setSubMode] = useState(false);
+  const [subOut, setSubOut] = useState<string | null>(null);
+  const [subIn, setSubIn] = useState<string | null>(null);
+
+  function exitSubMode() {
+    setSubMode(false);
+    setSubOut(null);
+    setSubIn(null);
+  }
+
+  async function confirmSub() {
+    if (!subOut || !subIn) return;
+    await props.onSub(subOut, subIn);
+    exitSubMode();
+  }
+
+  const subOutPlayer = props.players.find((p) => p.id === subOut);
+  const subInPlayer = props.players.find((p) => p.id === subIn);
 
   return (
     <section>
@@ -276,8 +350,15 @@ function LiveGameScreen(props: {
         {onCourt.map((p) => (
           <button
             key={p.id}
-            className={`card ${p.id === props.selectedPlayerId ? 'selected' : ''}`}
-            onClick={() => props.onSelectPlayer(p.id)}
+            className={`card ${subMode ? (p.id === subOut ? 'selected' : '') : p.id === props.selectedPlayerId ? 'selected' : ''}`}
+            onClick={() => {
+              if (subMode) {
+                // In sub mode, on-court taps pick the player going out.
+                setSubOut(subOut === p.id ? null : p.id);
+              } else {
+                props.onSelectPlayer(p.id);
+              }
+            }}
           >
             <strong>#{p.jersey_number}</strong>
             <br />
@@ -289,7 +370,26 @@ function LiveGameScreen(props: {
       </div>
       {onCourt.length === 0 && <p>No players on the roster yet — add players first.</p>}
 
-      {selected && (
+      <div className="row">
+        {!subMode ? (
+          <button onClick={() => setSubMode(true)}>Sub</button>
+        ) : (
+          <>
+            <span className="sub-hint">Tap the player going out, then the bench player coming in.</span>
+            <button disabled={!subOut || !subIn} onClick={confirmSub}>
+              Confirm sub
+            </button>
+            <button onClick={exitSubMode}>Cancel</button>
+          </>
+        )}
+      </div>
+      {subMode && (
+        <p>
+          Out: <strong>{subOutPlayer?.name ?? '—'}</strong> · In: <strong>{subInPlayer?.name ?? '—'}</strong>
+        </p>
+      )}
+
+      {!subMode && selected && (
         <>
           <p>
             Tagging: <strong>{selected.name}</strong>
@@ -308,6 +408,30 @@ function LiveGameScreen(props: {
         <button onClick={props.onOpponentScores}>Opponent scores (+1)</button>
         <button onClick={props.onUndo}>Undo last event</button>
       </div>
+
+      <h3>Bench</h3>
+      {bench.length === 0 ? (
+        <p>No bench players.</p>
+      ) : (
+        <ul className="list">
+          {bench.map((p) => (
+            <li key={p.id}>
+              {subMode ? (
+                <button
+                  className={p.id === subIn ? 'selected' : ''}
+                  onClick={() => setSubIn(subIn === p.id ? null : p.id)}
+                >
+                  #{p.jersey_number} {p.name} — {p.position}
+                </button>
+              ) : (
+                <>
+                  #{p.jersey_number} {p.name} — {p.position}
+                </>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
 
       <h3>Recent events</h3>
       <ul className="list">
