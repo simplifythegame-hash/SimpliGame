@@ -70,6 +70,30 @@ app.get(
   }),
 );
 
+// ------------------------------------------------------------ organization
+// Rename the organization. Trims, requires a non-empty name, max 100 chars.
+app.patch(
+  '/api/organization',
+  asyncHandler(async (req, res) => {
+    const { name } = req.body ?? {};
+    if (typeof name !== 'string' || !name.trim()) {
+      res.status(400).json({ ok: false, error: 'Organization name is required.' });
+      return;
+    }
+    if (name.trim().length > 100) {
+      res.status(400).json({ ok: false, error: 'Organization name must be 100 characters or fewer.' });
+      return;
+    }
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const result = await db.query('UPDATE organizations SET name = $1 WHERE id = $2 RETURNING *', [
+      name.trim(),
+      org.id,
+    ]);
+    res.json({ ok: true, organization: result.rows[0] });
+  }),
+);
+
 // ----------------------------------------------------------------- teams
 app.post(
   '/api/teams',
@@ -172,8 +196,8 @@ app.post(
         ],
       );
       // Seed the starting lineup from the first 6 roster players so the
-      // live screen has on-court cards immediately. Coaches reorder via
-      // subs later (lineup editing is a follow-up).
+      // live screen has on-court cards immediately. Coaches swap players
+      // via subs (POST /api/games/:id/sub).
       const roster = await client.query(
         'SELECT id FROM players WHERE team_id = $1 ORDER BY created_at ASC LIMIT 6',
         [team_id],
@@ -318,6 +342,102 @@ app.post(
       }
       await client.query('COMMIT');
       res.json({ ok: true, undone: event });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }),
+);
+
+// ------------------------------------------------------------ substitution
+// Swap a bench player onto the court. The in-player takes the out-player's
+// slot so slot numbers stay stable. Recorded as a game_event (stat_type
+// 'Substitution', player_id = the player coming in) so it shows in the
+// timeline. Lineup swap + event land in one transaction.
+//
+// Known limitation: undo removes the most recent event but does not
+// reverse a lineup swap — undoing a Substitution event clears it from the
+// timeline while the swapped lineup stays. Reversing a sub from the event
+// alone is impossible (events carry one player_id), so a full sub-undo
+// needs a dedicated endpoint; that is a follow-up.
+app.post(
+  '/api/games/:gameId/sub',
+  asyncHandler(async (req, res) => {
+    const { outPlayerId, inPlayerId } = req.body ?? {};
+    if (typeof outPlayerId !== 'string' || !outPlayerId) {
+      res.status(400).json({ ok: false, error: 'outPlayerId is required.' });
+      return;
+    }
+    if (typeof inPlayerId !== 'string' || !inPlayerId) {
+      res.status(400).json({ ok: false, error: 'inPlayerId is required.' });
+      return;
+    }
+    if (outPlayerId === inPlayerId) {
+      res.status(400).json({
+        ok: false,
+        error: 'The player coming in must be different from the player going out.',
+      });
+      return;
+    }
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const game = await db.query(
+      `SELECT g.* FROM games g JOIN teams t ON t.id = g.team_id
+       WHERE t.org_id = $1 AND g.id = $2`,
+      [org.id, req.params.gameId],
+    );
+    if (game.rows.length === 0) {
+      res.status(404).json({ ok: false, error: 'Game not found.' });
+      return;
+    }
+    // Both players must belong to the game's team.
+    const roster = await db.query('SELECT id FROM players WHERE team_id = $1 AND id IN ($2, $3)', [
+      game.rows[0].team_id,
+      outPlayerId,
+      inPlayerId,
+    ]);
+    if (roster.rows.length !== 2) {
+      res.status(400).json({ ok: false, error: "Both players must be on the game's team." });
+      return;
+    }
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      // Out-player must currently be on the court.
+      const outRow = await client.query('SELECT * FROM lineups WHERE game_id = $1 AND player_id = $2', [
+        req.params.gameId,
+        outPlayerId,
+      ]);
+      if (outRow.rows.length === 0) {
+        await client.query('ROLLBACK');
+        res.status(400).json({ ok: false, error: 'The player going out is not on the court.' });
+        return;
+      }
+      // In-player must currently be on the bench.
+      const inRow = await client.query('SELECT * FROM lineups WHERE game_id = $1 AND player_id = $2', [
+        req.params.gameId,
+        inPlayerId,
+      ]);
+      if (inRow.rows.length > 0) {
+        await client.query('ROLLBACK');
+        res.status(400).json({ ok: false, error: 'The player coming in is already on the court.' });
+        return;
+      }
+      // Keep the slot: the in-player takes the out-player's slot.
+      await client.query('UPDATE lineups SET player_id = $1 WHERE game_id = $2 AND player_id = $3', [
+        inPlayerId,
+        req.params.gameId,
+        outPlayerId,
+      ]);
+      const event = await client.query(
+        `INSERT INTO game_events (game_id, player_id, stat_type, side, points, video_seconds, entry_method)
+         VALUES ($1, $2, 'Substitution', 'ours', 0, 0, 'live') RETURNING *`,
+        [req.params.gameId, inPlayerId],
+      );
+      await client.query('COMMIT');
+      res.json({ ok: true, event: event.rows[0] });
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
