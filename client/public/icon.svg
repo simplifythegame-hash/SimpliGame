@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="SimpliGame">
+  <defs>
+    <linearGradient id="sg-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#04BEF1" />
+      <stop offset="1" stop-color="#048DF1" />
+    </linearGradient>
+  </defs>
+  <!-- Rounded-square tile with a generous safe zone so the mark survives
+       maskable cropping on Android home screens. -->
+  <rect width="512" height="512" rx="112" fill="url(#sg-bg)" />
+  <!-- Volleyball: white ball with curved seam lines in brand colors. -->
+  <circle cx="256" cy="256" r="168" fill="#ffffff" />
+  <path d="M256 88 C 312 170, 312 342, 256 424" stroke="#04BEF1" stroke-width="20" fill="none" stroke-linecap="round" />
+  <path d="M88 256 C 170 210, 342 210, 424 256" stroke="#04BEF1" stroke-width="20" fill="none" stroke-linecap="round" />
+  <path d="M138 138 C 208 208, 208 304, 138 374" stroke="#048DF1" stroke-width="16" fill="none" stroke-linecap="round" opacity="0.85" />
+  <path d="M374 138 C 304 208, 304 304, 374 374" stroke="#048DF1" stroke-width="16" fill="none" stroke-linecap="round" opacity="0.85" />
+</svg>
