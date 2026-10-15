@@ -97,9 +97,32 @@ npm run dev --workspace=@simpligame/client   # http://localhost:5173
   that fail because the device is offline are queued in localStorage and
   retried automatically on reconnect, with a visible queued count. Only
   stat events queue — subs and other mutations need a connection.
+- Family SMS: per-player self-enrollment links — families enter their own
+  numbers and opt in/out (the coach never types in anyone's number);
+  coach views show masked numbers only (•••-•••-1234). The watch link is
+  texted the moment the coach taps Go Live (published games only — never
+  30 minutes before), plus a coach-triggered highlights-ready alert.
+  Per-game delivery log with masked numbers. Real sending uses Twilio
+  when configured; with no Twilio credentials the app runs in log-only
+  mode (every attempt recorded as 'logged', never claimed sent).
 
-**Explicitly NOT in v1:** real auth/multi-coach logins, payments, real SMS
-(Twilio), real video rendering/clipping, AI stat analysis. Those arrive as
+## Family SMS (Twilio)
+
+Family text alerts send through Twilio when configured, and run in
+log-only mode (every attempt recorded, nothing claimed sent) when the
+Twilio env vars are absent:
+
+  TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER
+  PUBLIC_URL — base URL used in texted links (defaults to
+  https://simpligame.onrender.com)
+
+Set them as Render environment variables, then restart the service.
+Twilio trial accounts can only text numbers verified in the Twilio
+console — verify family numbers there during the trial, or use a paid
+number for full sending.
+
+**Explicitly NOT in v1:** real auth/multi-coach logins, payments,
+real video rendering/clipping, AI stat analysis. Those arrive as
 separate, scoped builds. The server is single-owner by design: when
 multi-org auth lands, every query must scope by the caller's org — see
 `server/src/db.ts`.
