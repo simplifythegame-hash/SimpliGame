@@ -51,6 +51,27 @@ export default function App() {
   const [youtubeUrl, setYoutubeUrl] = useState('');
   const [editingOrg, setEditingOrg] = useState(false);
   const [orgName, setOrgName] = useState('');
+  const [queuedCount, setQueuedCount] = useState(() => api.getQueuedEventCount());
+  const [isOffline, setIsOffline] = useState(
+    typeof navigator !== 'undefined' ? !navigator.onLine : false,
+  );
+
+  useEffect(() => {
+    const onQueue = (e: Event) => {
+      const count = (e as CustomEvent<{ count: number }>).detail?.count;
+      setQueuedCount(typeof count === 'number' ? count : api.getQueuedEventCount());
+    };
+    const onOnline = () => setIsOffline(false);
+    const onOffline = () => setIsOffline(true);
+    window.addEventListener('simpligame:queue-changed', onQueue);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('simpligame:queue-changed', onQueue);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, []);
 
   const refresh = useCallback(async () => {
     const ws = await api.getWorkspace();
@@ -117,15 +138,25 @@ export default function App() {
 
   async function handleLogEvent(stat: { label: string; points: number }) {
     if (!currentGame || !selectedPlayerId) return;
-    await run(async () => {
-      await api.logEvent(currentGame.id, {
+    setError('');
+    try {
+      const result = await api.logEvent(currentGame.id, {
         player_id: selectedPlayerId,
         stat_type: stat.label,
         side: 'ours',
         points: stat.points,
         video_seconds: 0,
       });
-    });
+      // Queued (offline): the event will sync on reconnect — skip the
+      // refresh, which would fail offline and surface a confusing error.
+      if ((result as { queued?: boolean }).queued) {
+        setQueuedCount(api.getQueuedEventCount());
+        return;
+      }
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Something went wrong');
+    }
   }
 
   async function handleOpponentScores() {
@@ -192,6 +223,20 @@ export default function App() {
       </header>
 
       {error && <p className="error">{error}</p>}
+      {isOffline && (
+        <p className="error">
+          You&apos;re offline — new stats are queued and will sync automatically when you&apos;re
+          back online.
+        </p>
+      )}
+      {!isOffline && queuedCount > 0 && (
+        <p className="mock-note">
+          {queuedCount} stat{queuedCount === 1 ? '' : 's'} waiting to sync — they&apos;ll send
+          automatically when the connection returns.
+        </p>
+      )}
+
+      <InstallPrompt />
 
       <nav className="row">
         <button className={view.kind === 'home' ? 'selected' : ''} onClick={() => setView({ kind: 'home' })}>Teams &amp; Games</button>
@@ -259,7 +304,7 @@ export default function App() {
                 const team = workspace.teams.find((t) => t.id === g.team_id);
                 return (
                   <li key={g.id}>
-                    {team?.name ?? 'Team'} vs {g.opponent || 'TBD'} — {g.our_score}:{g.opponent_score} ({g.mode})
+                    {team?.name ?? 'Team'} vs {g.opponent || 'TBD'} — {g.our_score}:{g.opponent_score} ({g.mode} · {g.status})
                     {' '}
                     <button onClick={() => setView({ kind: 'live', gameId: g.id })}>Live</button>{' '}
                     <button onClick={() => setView({ kind: 'detail', gameId: g.id })}>Detail</button>
@@ -282,6 +327,7 @@ export default function App() {
           onLogEvent={handleLogEvent}
           onOpponentScores={handleOpponentScores}
           onUndo={async () => run(() => api.undo(currentGame.id))}
+          onSetStatus={async (status) => run(() => api.setGameStatus(currentGame.id, status))}
           onSub={async (outPlayerId, inPlayerId) => {
             await run(async () => {
               await api.sub(currentGame.id, outPlayerId, inPlayerId);
@@ -327,6 +373,7 @@ export default function App() {
             const reel = await api.autoReel(currentGame.id, preset);
             setView({ kind: 'reel', reelId: reel.id });
           }}
+          onSetStatus={async (status) => run(() => api.setGameStatus(currentGame.id, status))}
           onBack={() => setView({ kind: 'home' })}
           onLive={() => setView({ kind: 'live', gameId: currentGame.id })}
         />
@@ -358,6 +405,80 @@ export default function App() {
   );
 }
 
+/**
+ * Install prompt: uses the beforeinstallprompt event when the browser
+ * offers it (Chrome/Edge/Android). iOS Safari never fires that event, so
+ * iPhones get the manual Share → Add to Home Screen instructions instead.
+ * Hidden once the app runs installed (standalone display mode) or after
+ * the coach dismisses it. The service worker registration lives in
+ * main.tsx (production only); this component is only the UI.
+ */
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+}
+
+function InstallPrompt() {
+  const [deferred, setDeferred] = useState<BeforeInstallPromptEvent | null>(null);
+  const [dismissed, setDismissed] = useState(false);
+  const [isStandalone, setIsStandalone] = useState(false);
+
+  useEffect(() => {
+    const standalone =
+      window.matchMedia('(display-mode: standalone)').matches ||
+      (window.navigator as { standalone?: boolean }).standalone === true;
+    setIsStandalone(standalone);
+    const onBefore = (e: Event) => {
+      e.preventDefault();
+      setDeferred(e as BeforeInstallPromptEvent);
+    };
+    const onInstalled = () => {
+      setIsStandalone(true);
+      setDeferred(null);
+    };
+    window.addEventListener('beforeinstallprompt', onBefore);
+    window.addEventListener('appinstalled', onInstalled);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onBefore);
+      window.removeEventListener('appinstalled', onInstalled);
+    };
+  }, []);
+
+  if (isStandalone || dismissed) return null;
+
+  if (deferred) {
+    return (
+      <div className="row">
+        <button
+          onClick={async () => {
+            await deferred.prompt();
+            setDeferred(null);
+          }}
+        >
+          Install app
+        </button>
+        <button type="button" onClick={() => setDismissed(true)}>
+          Not now
+        </button>
+        <small>Install SimpliGame on your home screen for fast, app-like access.</small>
+      </div>
+    );
+  }
+
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  if (isIOS) {
+    return (
+      <p>
+        <small>
+          On iPhone: tap Share (the box with an arrow) → Add to Home Screen to install
+          SimpliGame.
+        </small>
+      </p>
+    );
+  }
+
+  return null;
+}
+
 function LiveGameScreen(props: {
   game: Game;
   players: Player[];
@@ -369,6 +490,7 @@ function LiveGameScreen(props: {
   onOpponentScores: () => void;
   onUndo: () => void;
   onSub: (outPlayerId: string, inPlayerId: string) => Promise<void>;
+  onSetStatus: (status: 'live' | 'final') => Promise<void>;
   onBack: () => void;
   onDetail: () => void;
 }) {
@@ -414,6 +536,18 @@ function LiveGameScreen(props: {
       <p className="score">
         Us {props.game.our_score} — {props.game.opponent_score} Them
       </p>
+      <p>
+        Status: <strong>{props.game.status}</strong>
+      </p>
+      <div className="row">
+        {props.game.status === 'draft' && (
+          <button onClick={() => props.onSetStatus('live')}>Go Live</button>
+        )}
+        {props.game.status === 'live' && (
+          <button onClick={() => props.onSetStatus('final')}>End Game</button>
+        )}
+        {props.game.status === 'final' && <span>Final — this game is closed.</span>}
+      </div>
 
       <h3>On court — tap a player, then tap a stat</h3>
       <div className="cards">
@@ -526,6 +660,7 @@ function GameDetailScreen(props: {
   onUnpublish: () => void;
   onRevoke: () => void;
   onAutoReel: (preset: 'hype' | 'clean' | 'simple') => Promise<void>;
+  onSetStatus: (status: 'live' | 'final') => Promise<void>;
   onBack: () => void;
   onLive: () => void;
 }) {
@@ -554,6 +689,18 @@ function GameDetailScreen(props: {
       <h2>
         Game detail — vs {props.game.opponent || 'TBD'} · Final {props.game.our_score}:{props.game.opponent_score}
       </h2>
+      <p>
+        Status: <strong>{props.game.status}</strong>
+      </p>
+      <div className="row">
+        {props.game.status === 'draft' && (
+          <button onClick={() => props.onSetStatus('live')}>Go Live</button>
+        )}
+        {props.game.status === 'live' && (
+          <button onClick={() => props.onSetStatus('final')}>End Game</button>
+        )}
+        {props.game.status === 'final' && <span>Final — this game is closed.</span>}
+      </div>
 
       <h3>Video</h3>
       <form
