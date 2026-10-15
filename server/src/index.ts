@@ -163,6 +163,237 @@ app.post(
   }),
 );
 
+// ------------------------------------------------------- player profiles
+// Recruiting profile: coach-editable bio + measurables (player_profiles),
+// stats auto-aggregated from the player's own game_events, and the same
+// unlisted token-only publish model as game watch links (002).
+//
+// Stats shape: career totals by stat type (exactly the stat types the
+// app logs — Kill, Ace, Block, Dig, Assist, Attack attempt, Serve,
+// Error, Substitution, Opponent point), plus a per-game breakdown.
+// There is no season field on games in this schema, so "season" is not
+// a separate bucket — career totals + per-game is the honest shape.
+async function getOrgPlayer(db: ReturnType<typeof getPool>, orgId: string, playerId: string) {
+  const player = await db.query(
+    `SELECT p.* FROM players p JOIN teams t ON t.id = p.team_id
+     WHERE t.org_id = $1 AND p.id = $2`,
+    [orgId, playerId],
+  );
+  return player.rows[0] ?? null;
+}
+
+// Aggregate one player's events. Highlights = the player's own tracked
+// events (Substitution excluded — a lineup event, not a highlight), each
+// with its game's video id + timestamp so it links back to film.
+async function computePlayerStats(db: ReturnType<typeof getPool>, playerId: string) {
+  const events = await db.query(
+    `SELECT e.stat_type, e.points, e.video_seconds, e.created_at,
+            g.opponent, g.youtube_video_id
+     FROM game_events e JOIN games g ON g.id = e.game_id
+     WHERE e.player_id = $1
+     ORDER BY e.created_at ASC, e.id ASC`,
+    [playerId],
+  );
+  const totals: Record<string, number> = {};
+  let totalPoints = 0;
+  const byGameMap = new Map<
+    string,
+    { opponent: string; date: string; stats: Record<string, number>; points: number }
+  >();
+  const highlights: {
+    stat_type: string;
+    points: number;
+    video_seconds: number;
+    created_at: string;
+    opponent: string;
+    youtube_video_id: string | null;
+  }[] = [];
+  for (const e of events.rows) {
+    totals[e.stat_type] = (totals[e.stat_type] ?? 0) + 1;
+    totalPoints += e.points;
+    const key = `${e.opponent}|${e.created_at.slice(0, 10)}`;
+    let gameEntry = byGameMap.get(key);
+    if (!gameEntry) {
+      gameEntry = { opponent: e.opponent, date: e.created_at.slice(0, 10), stats: {}, points: 0 };
+      byGameMap.set(key, gameEntry);
+    }
+    gameEntry.stats[e.stat_type] = (gameEntry.stats[e.stat_type] ?? 0) + 1;
+    gameEntry.points += e.points;
+    if (e.stat_type !== 'Substitution') {
+      highlights.push({
+        stat_type: e.stat_type,
+        points: e.points,
+        video_seconds: e.video_seconds,
+        created_at: e.created_at,
+        opponent: e.opponent,
+        youtube_video_id: e.youtube_video_id,
+      });
+    }
+  }
+  return {
+    totals,
+    totalPoints,
+    gamesPlayed: byGameMap.size,
+    byGame: [...byGameMap.values()],
+    // Newest first for the highlights list.
+    highlights: highlights.reverse(),
+  };
+}
+
+// Length caps for coach-editable profile fields.
+const PROFILE_FIELD_MAX = { bio: 2000, measurables: 100 };
+
+function cleanProfileField(value: unknown, max: number): string | null {
+  if (value === undefined) return null; // field not sent — leave as-is
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (trimmed.length > max) return '__TOO_LONG__';
+  return trimmed;
+}
+
+app.get(
+  '/api/players/:playerId/profile',
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const playerId = String(req.params.playerId);
+    const player = await getOrgPlayer(db, org.id, playerId);
+    if (!player) {
+      res.status(404).json({ ok: false, error: 'Player not found.' });
+      return;
+    }
+    const profile = await db.query('SELECT * FROM player_profiles WHERE player_id = $1', [playerId]);
+    const stats = await computePlayerStats(db, playerId);
+    res.json({ ok: true, player, profile: profile.rows[0] ?? null, stats });
+  }),
+);
+
+app.patch(
+  '/api/players/:playerId/profile',
+  asyncHandler(async (req, res) => {
+    const { bio, height, graduation_year, positions_text, school, club_team } = req.body ?? {};
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const playerId = String(req.params.playerId);
+    const player = await getOrgPlayer(db, org.id, playerId);
+    if (!player) {
+      res.status(404).json({ ok: false, error: 'Player not found.' });
+      return;
+    }
+    // Validate each sent field: strings only, within the length caps.
+    const fields: Record<string, string> = {};
+    const incoming: Record<string, unknown> = { bio, height, graduation_year, positions_text, school, club_team };
+    for (const [key, value] of Object.entries(incoming)) {
+      if (value === undefined) continue;
+      const max = key === 'bio' ? PROFILE_FIELD_MAX.bio : PROFILE_FIELD_MAX.measurables;
+      const cleaned = cleanProfileField(value, max);
+      if (cleaned === null) {
+        res.status(400).json({ ok: false, error: `${key} must be a string.` });
+        return;
+      }
+      if (cleaned === '__TOO_LONG__') {
+        res.status(400).json({ ok: false, error: `${key} must be ${max} characters or fewer.` });
+        return;
+      }
+      fields[key] = cleaned;
+    }
+    // Upsert: a profile row is created on first edit, so there is no
+    // separate "create profile" step.
+    const sets = Object.keys(fields).map((k, i) => `${k} = $${i + 2}`).join(', ');
+    const values = Object.values(fields);
+    let result;
+    if (sets.length > 0) {
+      result = await db.query(
+        `INSERT INTO player_profiles (player_id, ${Object.keys(fields).join(', ')})
+         VALUES ($1, ${values.map((_, i) => `$${i + 2}`).join(', ')})
+         ON CONFLICT (player_id) DO UPDATE SET ${sets}, updated_at = now()
+         RETURNING *`,
+        [playerId, ...values],
+      );
+    } else {
+      result = await db.query(
+        `INSERT INTO player_profiles (player_id) VALUES ($1)
+         ON CONFLICT (player_id) DO NOTHING RETURNING *`,
+        [playerId],
+      );
+      if (result.rows.length === 0) {
+        result = await db.query('SELECT * FROM player_profiles WHERE player_id = $1', [playerId]);
+      }
+    }
+    res.json({ ok: true, profile: result.rows[0] });
+  }),
+);
+
+// Profile publish/unpublish/revoke — same token model as game publish:
+// publish reuses an existing token (or mints one); revoke mints a fresh
+// token so the old link dies while the published flag stays as-is.
+app.post(
+  '/api/players/:playerId/profile/publish',
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const playerId = String(req.params.playerId);
+    const player = await getOrgPlayer(db, org.id, playerId);
+    if (!player) {
+      res.status(404).json({ ok: false, error: 'Player not found.' });
+      return;
+    }
+    const existing = await db.query('SELECT * FROM player_profiles WHERE player_id = $1', [playerId]);
+    const token = existing.rows[0]?.profile_token ?? newPublishToken();
+    const result = await db.query(
+      `INSERT INTO player_profiles (player_id, profile_token, profile_published)
+       VALUES ($1, $2, true)
+       ON CONFLICT (player_id) DO UPDATE SET profile_token = $2, profile_published = true, updated_at = now()
+       RETURNING *`,
+      [playerId, token],
+    );
+    res.json({ ok: true, profile: result.rows[0], publicPath: `/profile/${token}` });
+  }),
+);
+
+app.post(
+  '/api/players/:playerId/profile/unpublish',
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const playerId = String(req.params.playerId);
+    const player = await getOrgPlayer(db, org.id, playerId);
+    if (!player) {
+      res.status(404).json({ ok: false, error: 'Player not found.' });
+      return;
+    }
+    const result = await db.query(
+      `INSERT INTO player_profiles (player_id, profile_published) VALUES ($1, false)
+       ON CONFLICT (player_id) DO UPDATE SET profile_published = false, updated_at = now()
+       RETURNING *`,
+      [playerId],
+    );
+    res.json({ ok: true, profile: result.rows[0] });
+  }),
+);
+
+app.post(
+  '/api/players/:playerId/profile/revoke',
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const playerId = String(req.params.playerId);
+    const player = await getOrgPlayer(db, org.id, playerId);
+    if (!player) {
+      res.status(404).json({ ok: false, error: 'Player not found.' });
+      return;
+    }
+    const token = newPublishToken();
+    const result = await db.query(
+      `INSERT INTO player_profiles (player_id, profile_token) VALUES ($1, $2)
+       ON CONFLICT (player_id) DO UPDATE SET profile_token = $2, updated_at = now()
+       RETURNING *`,
+      [playerId, token],
+    );
+    res.json({ ok: true, profile: result.rows[0], publicPath: `/profile/${token}` });
+  }),
+);
+
 // ----------------------------------------------------------------- games
 app.post(
   '/api/games',
@@ -628,6 +859,52 @@ app.get(
         youtube_video_id: g.youtube_video_id,
         events: events.rows,
         boxScore: [...boxByName.values()],
+      },
+    });
+  }),
+);
+
+// --------------------------------------------- public profile (no auth)
+// Serves ONLY the exact token. Bad tokens, revoked tokens, and
+// unpublished profiles all get the identical generic 404 — the response
+// never reveals which case it is. The payload exposes ONLY this
+// player's public surface: name, jersey, team, bio, measurables,
+// aggregated stats, and highlight events with video links. No roster,
+// no other players, no org details, no internal IDs.
+app.get(
+  '/api/public/profile/:token',
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const row = await db.query(
+      `SELECT p.id, p.name, p.jersey_number, p.position, t.name AS team_name
+       FROM player_profiles pp
+       JOIN players p ON p.id = pp.player_id
+       JOIN teams t ON t.id = p.team_id
+       WHERE pp.profile_token = $1 AND pp.profile_published = true`,
+      [req.params.token],
+    );
+    if (row.rows.length === 0) {
+      res.status(404).json({ ok: false, error: 'Profile not found.' });
+      return;
+    }
+    const player = row.rows[0];
+    const profile = await db.query('SELECT * FROM player_profiles WHERE player_id = $1', [player.id]);
+    const prof = profile.rows[0];
+    const stats = await computePlayerStats(db, player.id);
+    res.json({
+      ok: true,
+      profile: {
+        name: player.name,
+        jersey_number: player.jersey_number,
+        position: player.position,
+        team_name: player.team_name,
+        bio: prof.bio,
+        height: prof.height,
+        graduation_year: prof.graduation_year,
+        positions_text: prof.positions_text,
+        school: prof.school,
+        club_team: prof.club_team,
+        stats,
       },
     });
   }),
