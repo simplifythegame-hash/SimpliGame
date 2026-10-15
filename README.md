@@ -69,6 +69,10 @@ npm run dev --workspace=@simpligame/client   # http://localhost:5173
   token-only `/watch/<token>` page (live score, stream, event feed, box
   score — nothing else); bad/revoked/unpublished tokens all get the same
   generic 404
+- Recruiting profiles: per-player bio + measurables (coach-editable),
+  auto-aggregated career stats + per-game breakdown + highlight events
+  with video-timestamp links, publish/unpublish/regenerate, unlisted
+  token-only `/profile/<token>` page with Print / Save as PDF
 
 **Explicitly NOT in v1:** real auth/multi-coach logins, payments, real SMS
 (Twilio), real video rendering/clipping, AI stat analysis. Those arrive as
