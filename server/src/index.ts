@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import express from 'express';
 import path from 'path';
 import { getOrCreateOrganization, getPool } from './db';
+import { exportGameToSheets, isSheetsConfigured, type SheetRows } from './sheets';
 import { sendSms } from './sms';
 import { extractYouTubeVideoId } from './youtube';
 
@@ -1581,6 +1582,124 @@ app.post(
     }
     const summary = await sendGameSms(db, game, 'highlights');
     res.json({ ok: true, ...summary });
+  }),
+);
+
+// ------------------------------------------- Google Sheets export
+// Build a real Sheet from the game's own events + box score (same
+// aggregation as the public watch box score — no invented stats).
+// Service-account auth — no per-coach OAuth in this round. With no
+// Google credentials configured the endpoint returns
+// { notConfigured: true } — no HTTP call, no fake URL, never pretending
+// it worked. The coach can always use Download CSV (client-side) as the
+// always-available fallback. Export rows are recorded in
+// sheet_exports so Game Detail lists past exports with links.
+function formatSheetTimestamp(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+app.post(
+  '/api/games/:gameId/export-sheets',
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const gameId = String(req.params.gameId);
+    const game = await getOrgGame(db, org.id, gameId);
+    if (!game) {
+      res.status(404).json({ ok: false, error: 'Game not found.' });
+      return;
+    }
+    if (!isSheetsConfigured()) {
+      res.json({ ok: true, notConfigured: true });
+      return;
+    }
+    const team = await db.query('SELECT name FROM teams WHERE id = $1', [game.team_id]);
+    const teamName = team.rows[0]?.name ?? 'Team';
+    const players = await db.query('SELECT id, name, jersey_number FROM players WHERE team_id = $1', [
+      game.team_id,
+    ]);
+    const byId = new Map(players.rows.map((p) => [p.id, p]));
+    const events = await db.query(
+      `SELECT * FROM game_events WHERE game_id = $1 ORDER BY created_at ASC, id ASC`,
+      [gameId],
+    );
+    // Box Score tab: Player, Jersey, Points, then one column per stat
+    // type actually present in this game (sorted for stable columns).
+    const statTypes = [...new Set(events.rows.map((e) => e.stat_type as string))].sort();
+    const boxHeaders = ['Player', 'Jersey', 'Points', ...statTypes];
+    const boxByPlayer = new Map<string, { name: string; jersey: string; points: number; stats: Record<string, number> }>();
+    const timelineRows: (string | number)[][] = [];
+    for (const e of events.rows) {
+      const player = e.player_id ? byId.get(e.player_id) : null;
+      const name = player?.name ?? (e.side === 'opponent' ? 'Opponent' : 'Team');
+      let entry = e.player_id ? boxByPlayer.get(e.player_id) : undefined;
+      if (e.player_id && !entry) {
+        entry = { name, jersey: player?.jersey_number ?? '', points: 0, stats: {} };
+        boxByPlayer.set(e.player_id, entry);
+      }
+      if (entry) {
+        entry.stats[e.stat_type] = (entry.stats[e.stat_type] ?? 0) + 1;
+        entry.points += e.points;
+      }
+      timelineRows.push([
+        new Date(e.created_at).toLocaleString(),
+        name,
+        e.stat_type,
+        e.side,
+        e.points,
+        formatSheetTimestamp(e.video_seconds),
+      ]);
+    }
+    const boxRows = [...boxByPlayer.values()].map((entry) => [
+      entry.name,
+      entry.jersey,
+      entry.points,
+      ...statTypes.map((t) => entry.stats[t] ?? 0),
+    ]);
+    const rows: SheetRows = {
+      boxScoreHeaders: boxHeaders,
+      boxScoreRows: boxRows,
+      timelineHeaders: ['Time', 'Player', 'Stat', 'Side', 'Points', 'Video'],
+      timelineRows,
+    };
+    const date = new Date(game.created_at).toLocaleDateString();
+    const title = `${teamName} vs ${game.opponent || 'TBD'} — ${date}`;
+    const result = await exportGameToSheets(title, rows);
+    if (result.mode === 'not_configured') {
+      res.json({ ok: true, notConfigured: true });
+      return;
+    }
+    if (result.mode === 'failed') {
+      res.status(502).json({ ok: false, error: result.error });
+      return;
+    }
+    const inserted = await db.query(
+      `INSERT INTO sheet_exports (game_id, sheet_id, sheet_url)
+       VALUES ($1, $2, $3) RETURNING *`,
+      [gameId, result.sheetId, result.sheetUrl],
+    );
+    res.json({ ok: true, sheetId: result.sheetId, sheetUrl: result.sheetUrl, export: inserted.rows[0] });
+  }),
+);
+
+app.get(
+  '/api/games/:gameId/exports',
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const gameId = String(req.params.gameId);
+    const game = await getOrgGame(db, org.id, gameId);
+    if (!game) {
+      res.status(404).json({ ok: false, error: 'Game not found.' });
+      return;
+    }
+    const rows = await db.query(
+      'SELECT * FROM sheet_exports WHERE game_id = $1 ORDER BY created_at DESC',
+      [gameId],
+    );
+    res.json({ ok: true, exports: rows.rows });
   }),
 );
 
