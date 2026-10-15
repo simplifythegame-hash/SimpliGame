@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from './api';
-import type { Game, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, Workspace } from './types';
+import type { Game, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, Workspace } from './types';
 import YouTubePlayer from './components/YouTubePlayer';
 import './styles.css';
 
@@ -17,7 +17,7 @@ const STAT_BUTTONS: { label: string; points: number }[] = [
   { label: 'Error', points: 0 },
 ];
 
-type View = { kind: 'home' } | { kind: 'live'; gameId: string } | { kind: 'detail'; gameId: string } | { kind: 'profile'; playerId: string };
+type View = { kind: 'home' } | { kind: 'live'; gameId: string } | { kind: 'detail'; gameId: string } | { kind: 'profile'; playerId: string } | { kind: 'reels' } | { kind: 'reel'; reelId: string };
 
 export default function App() {
   // Public routes render standalone pages INSTEAD of the app shell — no
@@ -193,6 +193,16 @@ export default function App() {
 
       {error && <p className="error">{error}</p>}
 
+      <nav className="row">
+        <button className={view.kind === 'home' ? 'selected' : ''} onClick={() => setView({ kind: 'home' })}>Teams &amp; Games</button>
+        <button
+          className={view.kind === 'reels' || view.kind === 'reel' ? 'selected' : ''}
+          onClick={() => setView({ kind: 'reels' })}
+        >
+          Reels
+        </button>
+      </nav>
+
       {view.kind === 'home' && (
         <>
           <section>
@@ -313,8 +323,28 @@ export default function App() {
               await api.revokeGameLink(currentGame.id);
             });
           }}
+          onAutoReel={async (preset) => {
+            const reel = await api.autoReel(currentGame.id, preset);
+            setView({ kind: 'reel', reelId: reel.id });
+          }}
           onBack={() => setView({ kind: 'home' })}
           onLive={() => setView({ kind: 'live', gameId: currentGame.id })}
+        />
+      )}
+
+      {view.kind === 'reels' && (
+        <ReelsListScreen
+          games={workspace.games}
+          teams={workspace.teams}
+          onOpen={(reelId) => setView({ kind: 'reel', reelId })}
+        />
+      )}
+
+      {view.kind === 'reel' && (
+        <ReelStudioScreen
+          reelId={view.reelId}
+          workspace={workspace}
+          onBack={() => setView({ kind: 'reels' })}
         />
       )}
 
@@ -495,11 +525,15 @@ function GameDetailScreen(props: {
   onPublish: () => void;
   onUnpublish: () => void;
   onRevoke: () => void;
+  onAutoReel: (preset: 'hype' | 'clean' | 'simple') => Promise<void>;
   onBack: () => void;
   onLive: () => void;
 }) {
   // Box score: per-player counts by stat type, plus points.
   const [copied, setCopied] = useState(false);
+  const [autoPreset, setAutoPreset] = useState<'hype' | 'clean' | 'simple'>('hype');
+  const [autoBusy, setAutoBusy] = useState(false);
+  const [autoError, setAutoError] = useState('');
   const boxScore = useMemo(() => {
     const byPlayer = new Map<string, { name: string; stats: Record<string, number>; points: number }>();
     for (const e of props.events) {
@@ -586,6 +620,36 @@ function GameDetailScreen(props: {
           <button onClick={props.onPublish}>Publish watch link</button>
         </>
       )}
+
+      <h3>Auto Reel</h3>
+      <p>
+        One tap builds a draft reel from this game&apos;s highlights (best plays first) and opens it
+        in Reel Studio for tweaking.
+      </p>
+      <div className="row">
+        <select value={autoPreset} onChange={(e) => setAutoPreset(e.target.value as 'hype' | 'clean' | 'simple')}>
+          <option value="hype">Hype — fades + overlays</option>
+          <option value="clean">Clean — cuts + overlays</option>
+          <option value="simple">Simple — cuts, no overlays</option>
+        </select>
+        <button
+          disabled={autoBusy}
+          onClick={async () => {
+            setAutoBusy(true);
+            setAutoError('');
+            try {
+              await props.onAutoReel(autoPreset);
+            } catch (e) {
+              setAutoError(e instanceof Error ? e.message : 'Auto Reel failed');
+            } finally {
+              setAutoBusy(false);
+            }
+          }}
+        >
+          {autoBusy ? 'Building…' : 'Auto Reel'}
+        </button>
+      </div>
+      {autoError && <p className="error">{autoError}</p>}
 
       <h3>Box score</h3>
       {boxScore.length === 0 ? (
@@ -1129,5 +1193,474 @@ function WatchPage({ token }: { token: string }) {
         </ul>
       )}
     </div>
+  );
+}
+
+/**
+ * Reels section: list of saved reel projects + create. Auto Reel lives
+ * on Game Detail (it needs a game); this screen is the library.
+ */
+function ReelsListScreen(props: {
+  games: Game[];
+  teams: import('./types').Team[];
+  onOpen: (reelId: string) => void;
+}) {
+  const [reels, setReels] = useState<ReelProject[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [newName, setNewName] = useState('');
+  const [newGameId, setNewGameId] = useState('');
+
+  const load = useCallback(async () => {
+    const list = await api.listReels();
+    setReels(list);
+  }, []);
+
+  useEffect(() => {
+    load()
+      .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load reels'))
+      .finally(() => setLoading(false));
+  }, [load]);
+
+  async function handleCreate(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    try {
+      const reel = await api.createReel({
+        name: newName.trim() || undefined,
+        game_id: newGameId || null,
+      });
+      props.onOpen(reel.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to create reel');
+    }
+  }
+
+  async function handleDelete(reelId: string) {
+    setError('');
+    try {
+      await api.deleteReel(reelId);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to delete reel');
+    }
+  }
+
+  if (loading) return <section><p>Loading reels…</p></section>;
+
+  return (
+    <section>
+      <h2>Reels</h2>
+      {error && <p className="error">{error}</p>}
+      <form onSubmit={handleCreate} className="row">
+        <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="New reel name (optional)" />
+        <select value={newGameId} onChange={(e) => setNewGameId(e.target.value)}>
+          <option value="">No source game</option>
+          {props.games.map((g) => {
+            const team = props.teams.find((t) => t.id === g.team_id);
+            return (
+              <option key={g.id} value={g.id}>
+                {team?.name ?? 'Team'} vs {g.opponent || 'TBD'}
+              </option>
+            );
+          })}
+        </select>
+        <button type="submit">Create reel</button>
+      </form>
+      {reels.length === 0 ? (
+        <p>
+          No reels yet. Create one here, or use <strong>Auto Reel</strong> on a game&apos;s detail
+          page to build a draft from its highlights.
+        </p>
+      ) : (
+        <ul className="list">
+          {reels.map((r) => {
+            const game = props.games.find((g) => g.id === r.game_id);
+            const team = props.teams.find((t) => t.id === game?.team_id);
+            return (
+              <li key={r.id}>
+                <strong>{r.name}</strong> · {r.clips.length} clip{r.clips.length === 1 ? '' : 's'} ·{' '}
+                {r.music_track || 'No music'} · {r.status}
+                {game ? ` · ${team?.name ?? 'Team'} vs ${game.opponent || 'TBD'}` : ''}
+                {' '}
+                <button onClick={() => props.onOpen(r.id)}>Open in Studio</button>{' '}
+                <button onClick={() => handleDelete(r.id)}>Delete</button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/** Built-in placeholder music tracks (names only — no real audio files,
+ *  no audio playback in this round). Ids match the server's list. */
+const MUSIC_TRACK_OPTIONS = [
+  { id: 'none', name: 'No music' },
+  { id: 'hype-energy', name: 'Hype Energy (placeholder)' },
+  { id: 'pump-up', name: 'Pump Up (placeholder)' },
+  { id: 'chill-warmup', name: 'Chill Warm-Up (placeholder)' },
+  { id: 'cinematic', name: 'Cinematic (placeholder)' },
+];
+
+/**
+ * Reel Studio: reorder clips, trim (start/end), per-clip transition,
+ * text overlays, slow-motion toggle, music selection, preview (clips
+ * in sequence via YouTube embeds jumping to each clip's timestamp),
+ * and mock export. Projects persist server-side.
+ *
+ * Honest limits (same as the prototype): preview plays each clip's
+ * source video at its timestamp — it does not render a combined file.
+ * Export is a placeholder: no real MP4 is produced in this build.
+ */
+function ReelStudioScreen(props: { reelId: string; workspace: Workspace; onBack: () => void }) {
+  const [reel, setReel] = useState<ReelProject | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [saved, setSaved] = useState(false);
+  const [name, setName] = useState('');
+  const [clips, setClips] = useState<ReelClip[]>([]);
+  const [musicTrack, setMusicTrack] = useState('');
+  const [exportMessage, setExportMessage] = useState('');
+  const [addGameId, setAddGameId] = useState('');
+
+  // Preview: which clip is playing, and whether auto-advance is on.
+  const [previewIndex, setPreviewIndex] = useState(0);
+  const [previewPlaying, setPreviewPlaying] = useState(false);
+
+  const load = useCallback(async () => {
+    const r = await api.getReel(props.reelId);
+    setReel(r);
+    setName(r.name);
+    setClips(r.clips);
+    setMusicTrack(r.music_track);
+  }, [props.reelId]);
+
+  useEffect(() => {
+    load()
+      .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load reel'))
+      .finally(() => setLoading(false));
+  }, [load]);
+
+  // Preview auto-advance: after the current clip's trimmed length
+  // (doubled in slow motion), step to the next clip; stop at the end.
+  useEffect(() => {
+    if (!previewPlaying || clips.length === 0) return;
+    const clip = clips[previewIndex];
+    if (!clip) {
+      setPreviewPlaying(false);
+      return;
+    }
+    const duration = Math.max(1, clip.endSeconds - clip.startSeconds) * (clip.slowMo ? 2 : 1) * 1000;
+    const t = setTimeout(() => {
+      if (previewIndex + 1 < clips.length) {
+        setPreviewIndex(previewIndex + 1);
+      } else {
+        setPreviewPlaying(false);
+      }
+    }, duration);
+    return () => clearTimeout(t);
+  }, [previewPlaying, previewIndex, clips]);
+
+  if (loading) return <section><p>Loading reel…</p></section>;
+  if (!reel) return <section><button onClick={props.onBack}>← Reels</button><p className="error">{error || 'Reel not found.'}</p></section>;
+
+  // Non-null alias: TS narrowing from the guard above does not carry
+  // into the async handler closures below, so bind it explicitly.
+  const activeReel: ReelProject = reel;
+
+  function updateClip(index: number, patch: Partial<ReelClip>) {
+    setClips((prev) => prev.map((c, i) => (i === index ? { ...c, ...patch } : c)));
+  }
+
+  function moveClip(index: number, direction: -1 | 1) {
+    setClips((prev) => {
+      const next = [...prev];
+      const target = index + direction;
+      if (target < 0 || target >= next.length) return prev;
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  }
+
+  async function handleSave() {
+    setError('');
+    setSaved(false);
+    try {
+      const updated = await api.updateReel(activeReel.id, { name: name.trim() || activeReel.name, clips, music_track: musicTrack });
+      setReel(updated);
+      setSaved(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to save reel');
+    }
+  }
+
+  async function handleExport() {
+    setError('');
+    setExportMessage('');
+    try {
+      const result = await api.exportReel(activeReel.id);
+      setExportMessage(result.message);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Export failed');
+    }
+  }
+
+  async function handleDelete() {
+    setError('');
+    try {
+      await api.deleteReel(activeReel.id);
+      props.onBack();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to delete reel');
+    }
+  }
+
+  // Highlights available to add: this workspace's scoring events for the
+  // chosen game (Substitution and opponent points are not highlights).
+  const addGame = props.workspace.games.find((g) => g.id === addGameId);
+  const addableEvents = addGame
+    ? props.workspace.events.filter(
+        (e) =>
+          e.game_id === addGame.id &&
+          e.player_id &&
+          ['Kill', 'Ace', 'Block', 'Assist', 'Dig'].includes(e.stat_type),
+      )
+    : [];
+
+  const previewClip = clips[previewIndex];
+
+  return (
+    <section>
+      <button onClick={props.onBack}>← Reels</button>
+      <h2>Reel Studio — {reel.name}</h2>
+      <p>
+        <small>
+          {clips.length} clip{clips.length === 1 ? '' : 's'} · {reel.status} · Export is a placeholder
+          in this build — no real MP4 is produced yet.
+        </small>
+      </p>
+      {error && <p className="error">{error}</p>}
+      {saved && <p>Reel saved.</p>}
+
+      <div className="row">
+        <label className="field-label">
+          Reel name
+          <input value={name} onChange={(e) => setName(e.target.value)} maxLength={100} className="wide" />
+        </label>
+        <label className="field-label">
+          Music (placeholder — no real audio)
+          <select value={musicTrack} onChange={(e) => setMusicTrack(e.target.value)}>
+            {MUSIC_TRACK_OPTIONS.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button onClick={handleSave}>Save reel</button>
+        <button
+          onClick={async () => {
+            setError('');
+            try {
+              const updated = await api.updateReel(reel.id, { status: 'ready' });
+              setReel(updated);
+              setSaved(true);
+            } catch (e) {
+              setError(e instanceof Error ? e.message : 'Failed to mark ready');
+            }
+          }}
+        >
+          Mark ready
+        </button>
+        <button onClick={handleExport}>Export (mock)</button>
+        <button onClick={handleDelete}>Delete reel</button>
+      </div>
+      {exportMessage && <p className="mock-note">{exportMessage}</p>}
+
+      <h3>Preview</h3>
+      {clips.length === 0 ? (
+        <p>No clips yet — add highlights below, or use Auto Reel on a game to build a draft.</p>
+      ) : (
+        <>
+          <p>
+            Clip {previewIndex + 1} of {clips.length}
+            {previewClip?.overlay ? ` — “${previewClip.overlay}”` : ''}
+            {previewClip?.slowMo ? ' · slow motion' : ''} · transition:{' '}
+            {previewClip?.transition ?? 'cut'}
+          </p>
+          {previewClip?.videoId ? (
+            <YouTubePlayer
+              videoId={previewClip.videoId}
+              isLive={false}
+              startSeconds={previewClip.startSeconds}
+            />
+          ) : (
+            <p>No video attached for this clip.</p>
+          )}
+          <div className="row">
+            <button disabled={previewIndex === 0} onClick={() => setPreviewIndex(previewIndex - 1)}>
+              ← Previous clip
+            </button>
+            {!previewPlaying ? (
+              <button onClick={() => setPreviewPlaying(true)}>▶ Play reel</button>
+            ) : (
+              <button onClick={() => setPreviewPlaying(false)}>⏸ Stop</button>
+            )}
+            <button
+              disabled={previewIndex + 1 >= clips.length}
+              onClick={() => setPreviewIndex(previewIndex + 1)}
+            >
+              Next clip →
+            </button>
+          </div>
+          <p>
+            <small>
+              Preview plays each clip&apos;s source video at its timestamp — it does not render a
+              combined file.
+            </small>
+          </p>
+        </>
+      )}
+
+      <h3>Clips</h3>
+      {clips.length === 0 ? (
+        <p>No clips in this reel yet.</p>
+      ) : (
+        <ul className="list">
+          {clips.map((clip, i) => (
+            <li key={i} className="clip-row">
+              <strong>
+                {i + 1}. {clip.overlay || `Clip ${i + 1}`}
+              </strong>{' '}
+              <small>
+                {clip.videoId ? 'video attached' : 'no video'} · {formatTimestamp(clip.startSeconds)} →{' '}
+                {formatTimestamp(clip.endSeconds)}
+              </small>
+              <div className="row">
+                <label className="field-label">
+                  Start (s)
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={clip.startSeconds}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      if (Number.isFinite(v) && v >= 0) updateClip(i, { startSeconds: v });
+                    }}
+                  />
+                </label>
+                <label className="field-label">
+                  End (s)
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={clip.endSeconds}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      if (Number.isFinite(v) && v > clip.startSeconds) updateClip(i, { endSeconds: v });
+                    }}
+                  />
+                </label>
+                <label className="field-label">
+                  Transition
+                  <select
+                    value={clip.transition}
+                    onChange={(e) => updateClip(i, { transition: e.target.value as 'cut' | 'fade' })}
+                  >
+                    <option value="cut">Cut</option>
+                    <option value="fade">Fade</option>
+                  </select>
+                </label>
+                <label className="field-label">
+                  Text overlay
+                  <input
+                    value={clip.overlay}
+                    onChange={(e) => updateClip(i, { overlay: e.target.value })}
+                    maxLength={200}
+                    placeholder="e.g. #9 — Kill"
+                    className="wide"
+                  />
+                </label>
+                <label className="field-label">
+                  Slow motion
+                  <input
+                    type="checkbox"
+                    checked={clip.slowMo}
+                    onChange={(e) => updateClip(i, { slowMo: e.target.checked })}
+                  />
+                </label>
+              </div>
+              <div className="row">
+                <button disabled={i === 0} onClick={() => moveClip(i, -1)}>
+                  ↑ Move up
+                </button>
+                <button disabled={i + 1 >= clips.length} onClick={() => moveClip(i, 1)}>
+                  ↓ Move down
+                </button>
+                <button onClick={() => setPreviewIndex(i)}>Preview this clip</button>
+                <button onClick={() => setClips((prev) => prev.filter((_, j) => j !== i))}>
+                  Remove
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <h3>Add highlights</h3>
+      <div className="row">
+        <select value={addGameId} onChange={(e) => setAddGameId(e.target.value)}>
+          <option value="">Pick a game…</option>
+          {props.workspace.games.map((g) => {
+            const team = props.workspace.teams.find((t) => t.id === g.team_id);
+            return (
+              <option key={g.id} value={g.id}>
+                {team?.name ?? 'Team'} vs {g.opponent || 'TBD'}
+              </option>
+            );
+          })}
+        </select>
+      </div>
+      {addGame && addableEvents.length === 0 && <p>No highlight events in this game yet.</p>}
+      {addGame && addableEvents.length > 0 && (
+        <ul className="list">
+          {addableEvents.map((e) => {
+            const player = props.workspace.players.find((p) => p.id === e.player_id);
+            const alreadyAdded = clips.some((c) => c.eventId === e.id);
+            return (
+              <li key={e.id}>
+                {player ? `#${player.jersey_number} ${player.name}` : 'Player'} — {e.stat_type} at{' '}
+                {formatTimestamp(e.video_seconds)}
+                {' '}
+                <button
+                  disabled={alreadyAdded}
+                  onClick={() => {
+                    setClips((prev) => [
+                      ...prev,
+                      {
+                        eventId: e.id,
+                        gameId: e.game_id,
+                        videoId: addGame.youtube_video_id,
+                        startSeconds: Math.max(0, e.video_seconds - 2),
+                        endSeconds: e.video_seconds + 8,
+                        transition: 'cut',
+                        overlay: `${player ? `#${player.jersey_number} ${player.name}` : 'Player'} — ${e.stat_type}`,
+                        slowMo: false,
+                      },
+                    ]);
+                  }}
+                >
+                  {alreadyAdded ? 'Added' : 'Add to reel'}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
   );
 }
