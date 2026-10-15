@@ -66,9 +66,12 @@ function loadYouTubeApi(): Promise<void> {
 interface Props {
   videoId: string;
   isLive: boolean;
+  /** Optional start offset (seconds) — Reel Studio preview jumps each
+   *  clip to its timestamp via the player's `start` var. */
+  startSeconds?: number;
 }
 
-export default function YouTubePlayer({ videoId, isLive }: Props) {
+export default function YouTubePlayer({ videoId, isLive, startSeconds }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<{ destroy: () => void } | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
@@ -91,7 +94,7 @@ export default function YouTubePlayer({ videoId, isLive }: Props) {
         if (cancelled || !containerRef.current || !window.YT) return;
         playerRef.current = new window.YT.Player(containerRef.current, {
           videoId,
-          playerVars: { rel: 0, playsinline: 1 },
+          playerVars: { rel: 0, playsinline: 1, ...(startSeconds ? { start: startSeconds } : {}) },
           events: {
             onReady: () => {
               if (cancelled) return;
@@ -118,7 +121,7 @@ export default function YouTubePlayer({ videoId, isLive }: Props) {
       playerRef.current?.destroy();
       playerRef.current = null;
     };
-  }, [videoId, retryKey]);
+  }, [videoId, retryKey, startSeconds]);
 
   if (state === 'error') {
     return (
