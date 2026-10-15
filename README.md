@@ -105,6 +105,34 @@ npm run dev --workspace=@simpligame/client   # http://localhost:5173
   Per-game delivery log with masked numbers. Real sending uses Twilio
   when configured; with no Twilio credentials the app runs in log-only
   mode (every attempt recorded as 'logged', never claimed sent).
+- Google Sheets export: per-game **Export to Google Sheets** builds a
+  real Sheet (Box Score + Timeline tabs) from the game's real events,
+  records the export, and lists past exports with links. With no Google
+  credentials the button reports "not configured" honestly — and
+  **Download CSV** (same data, built client-side) always works.
+
+## Google Sheets export (service account)
+
+Game exports build a real Google Sheet via a service account — no
+per-coach OAuth in this round. With the env vars absent, the Export
+button reports "not configured" and the CSV download still works:
+
+  GOOGLE_SERVICE_ACCOUNT_EMAIL
+  GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY (PEM key; keep the literal \n
+    escapes — the server converts them to real newlines)
+  GOOGLE_SHARE_EMAIL (optional — Sheet is shared with this email as a
+    writer; without it the Sheet is anyone-with-link reader)
+
+Setup (Google Cloud, signed in with the app's Google account):
+1. Create a project (or reuse one) → enable the **Google Sheets API**
+   and the **Google Drive API**.
+2. IAM & Admin → Service Accounts → Create service account → Create
+   key (JSON) → download it once.
+3. From the JSON key, copy `client_email` → GOOGLE_SERVICE_ACCOUNT_EMAIL
+   and `private_key` → GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY. Set both as
+   Render environment variables, then restart the service.
+4. Never paste the private key in chat. If a key is ever exposed,
+   delete it in Google Cloud and make a new one.
 
 ## Family SMS (Twilio)
 
