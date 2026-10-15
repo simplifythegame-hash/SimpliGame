@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from './api';
-import type { EnrollInfo, FamilyContact, Game, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SmsLogRow, Workspace } from './types';
+import type { EnrollInfo, FamilyContact, Game, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Workspace } from './types';
 import YouTubePlayer from './components/YouTubePlayer';
 import './styles.css';
 
@@ -667,7 +667,7 @@ function LiveGameScreen(props: {
 function GameDetailScreen(props: {
   game: Game;
   players: Player[];
-  events: { player_id: string | null; stat_type: string; points: number; side: string; created_at: string }[];
+  events: { player_id: string | null; stat_type: string; points: number; side: string; created_at: string; video_seconds: number }[];
   youtubeUrl: string;
   onYoutubeUrlChange: (v: string) => void;
   onSaveYouTube: () => void;
@@ -690,6 +690,11 @@ function GameDetailScreen(props: {
   const [smsBusy, setSmsBusy] = useState(false);
   const [smsResult, setSmsResult] = useState('');
   const [smsError, setSmsError] = useState('');
+  // Google Sheets export: past exports list is best-effort, same as SMS.
+  const [sheetExports, setSheetExports] = useState<SheetExport[]>([]);
+  const [sheetBusy, setSheetBusy] = useState(false);
+  const [sheetResult, setSheetResult] = useState('');
+  const [sheetError, setSheetError] = useState('');
 
   async function loadSmsLog() {
     try {
@@ -699,8 +704,17 @@ function GameDetailScreen(props: {
     }
   }
 
+  async function loadSheetExports() {
+    try {
+      setSheetExports(await api.getSheetExports(props.game.id));
+    } catch {
+      // Best-effort: the list stays as-is on failure.
+    }
+  }
+
   useEffect(() => {
     void loadSmsLog();
+    void loadSheetExports();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.game.id]);
   const boxScore = useMemo(() => {
@@ -715,6 +729,57 @@ function GameDetailScreen(props: {
     }
     return [...byPlayer.values()];
   }, [props.events, props.players]);
+
+  // CSV export: a real CSV built client-side from the same game data,
+  // so export always works — with or without Google configured.
+  // Columns mirror the Google Sheets tabs (Box Score, Timeline).
+  function csvEscape(value: string | number): string {
+    const s = String(value);
+    if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  }
+
+  function downloadCsv() {
+    const statTypes = [...new Set(props.events.map((e) => e.stat_type))].sort();
+    const lines: string[] = [];
+    lines.push('Box Score');
+    lines.push(['Player', 'Jersey', 'Points', ...statTypes].map(csvEscape).join(','));
+    for (const row of boxScore) {
+      const player = props.players.find((p) => p.name === row.name);
+      lines.push(
+        [row.name, player?.jersey_number ?? '', row.points, ...statTypes.map((t) => row.stats[t] ?? 0)]
+          .map(csvEscape)
+          .join(','),
+      );
+    }
+    lines.push('');
+    lines.push('Timeline');
+    lines.push(['Time', 'Player', 'Stat', 'Side', 'Points', 'Video'].map(csvEscape).join(','));
+    for (const e of props.events) {
+      const player = props.players.find((p) => p.id === e.player_id);
+      lines.push(
+        [
+          new Date(e.created_at).toLocaleString(),
+          player?.name ?? (e.side === 'opponent' ? 'Opponent' : 'Team'),
+          e.stat_type,
+          e.side,
+          e.points,
+          formatTimestamp(e.video_seconds),
+        ]
+          .map(csvEscape)
+          .join(','),
+      );
+    }
+    const blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `simpligame-${props.game.opponent || 'game'}-${props.game.id.slice(0, 8)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
 
   return (
     <section>
@@ -890,6 +955,65 @@ function GameDetailScreen(props: {
         </button>
       </div>
       {autoError && <p className="error">{autoError}</p>}
+
+      <h3>Export</h3>
+      <p>
+        Export this game&apos;s box score + timeline to a Google Sheet, or download the same data
+        as a CSV — the CSV always works, with or without Google configured.
+      </p>
+      <div className="row">
+        <button
+          disabled={sheetBusy}
+          onClick={async () => {
+            setSheetBusy(true);
+            setSheetResult('');
+            setSheetError('');
+            try {
+              const result = await api.exportToSheets(props.game.id);
+              if (result.notConfigured) {
+                setSheetResult(
+                  'Google Sheets is not configured yet — set the Google service-account env vars on the server, then try again. (The CSV download below works right now.)',
+                );
+              } else {
+                setSheetResult(`Exported to Google Sheets.`);
+                setSheetExports((prev) => [
+                  {
+                    id: `new-${Date.now()}`,
+                    game_id: props.game.id,
+                    sheet_id: result.sheetId ?? '',
+                    sheet_url: result.sheetUrl ?? '',
+                    created_at: new Date().toISOString(),
+                  },
+                  ...prev,
+                ]);
+              }
+            } catch (e) {
+              setSheetError(e instanceof Error ? e.message : 'Google Sheets export failed');
+            } finally {
+              setSheetBusy(false);
+            }
+          }}
+        >
+          {sheetBusy ? 'Exporting…' : 'Export to Google Sheets'}
+        </button>
+        <button type="button" onClick={downloadCsv}>
+          Download CSV
+        </button>
+      </div>
+      {sheetResult && <p>{sheetResult}</p>}
+      {sheetError && <p className="error">{sheetError}</p>}
+      {sheetExports.length > 0 && (
+        <ul className="list">
+          {sheetExports.map((x) => (
+            <li key={x.id}>
+              <a href={x.sheet_url} target="_blank" rel="noreferrer">
+                Open Sheet
+              </a>{' '}
+              · {new Date(x.created_at).toLocaleString()}
+            </li>
+          ))}
+        </ul>
+      )}
 
       <h3>Box score</h3>
       {boxScore.length === 0 ? (
