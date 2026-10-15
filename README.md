@@ -40,8 +40,9 @@ npm run dev --workspace=@simpligame/client   # http://localhost:5173
 3. In Render: **New → Web Service** from this repo (or apply `render.yaml`
    as a Blueprint). Set `DATABASE_URL` to the Neon connection string.
    Render sets `PORT` automatically.
-4. Run `migrations/001_initial_schema.sql` against the Neon database once,
-   then restart the service.
+4. Run each migration in `migrations/` against the Neon database in order
+   (001, then 002, …), then restart the service. New migrations are applied
+   the same way: paste the SQL into the Neon SQL Editor, run it, restart.
 5. Your URL: `https://simpligame.onrender.com` (or whatever Render assigns).
 
 ## Free-tier notes
@@ -64,6 +65,10 @@ npm run dev --workspace=@simpligame/client   # http://localhost:5173
 - Game detail: event timeline, per-player box score
 - YouTube link per game (any URL shape or bare ID), inline embed with a
   10-second load timeout and friendly error + Retry
+- Public watch links: per-game publish/unpublish/regenerate, unlisted
+  token-only `/watch/<token>` page (live score, stream, event feed, box
+  score — nothing else); bad/revoked/unpublished tokens all get the same
+  generic 404
 
 **Explicitly NOT in v1:** real auth/multi-coach logins, payments, real SMS
 (Twilio), real video rendering/clipping, AI stat analysis. Those arrive as
