@@ -122,4 +122,47 @@ export const api = {
     const data = await parseJson(await fetch(`/api/public/watch/${token}`));
     return data.watch as import('./types').PublicWatch;
   },
+
+  async getPlayerProfile(playerId: string) {
+    const data = await parseJson(await fetch(`/api/players/${playerId}/profile`));
+    return data as {
+      player: import('./types').Player;
+      profile: import('./types').PlayerProfile | null;
+      stats: import('./types').PlayerProfileStats;
+    };
+  },
+
+  async updatePlayerProfile(
+    playerId: string,
+    body: { bio?: string; height?: string; graduation_year?: string; positions_text?: string; school?: string; club_team?: string },
+  ) {
+    const data = await parseJson(
+      await fetch(`/api/players/${playerId}/profile`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    );
+    return data.profile as import('./types').PlayerProfile;
+  },
+
+  async publishProfile(playerId: string) {
+    const data = await parseJson(await fetch(`/api/players/${playerId}/profile/publish`, { method: 'POST' }));
+    return data as { profile: import('./types').PlayerProfile; publicPath: string };
+  },
+
+  async unpublishProfile(playerId: string) {
+    const data = await parseJson(await fetch(`/api/players/${playerId}/profile/unpublish`, { method: 'POST' }));
+    return data.profile as import('./types').PlayerProfile;
+  },
+
+  async revokeProfileLink(playerId: string) {
+    const data = await parseJson(await fetch(`/api/players/${playerId}/profile/revoke`, { method: 'POST' }));
+    return data as { profile: import('./types').PlayerProfile; publicPath: string };
+  },
+
+  async getPublicProfile(token: string) {
+    const data = await parseJson(await fetch(`/api/public/profile/${token}`));
+    return data.profile as import('./types').PublicProfile;
+  },
 };
