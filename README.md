@@ -57,8 +57,9 @@ npm run dev --workspace=@simpligame/client   # http://localhost:5173
 ## What v1 does / does not do
 
 **In scope (foundation + core stat loop):**
-- One organization (single-owner v1), teams, rosters, games
+- One organization (single-owner v1), teams, rosters, games; org rename from the header
 - Live stat tagging: on-court lineup cards, tap player → tap stat
+- Lineup subs on the live screen (bench player in, on-court player out, same slot; recorded in the event timeline)
 - Undo, running score kept in lockstep with the event log
 - Game detail: event timeline, per-player box score
 - YouTube link per game (any URL shape or bare ID), inline embed with a
