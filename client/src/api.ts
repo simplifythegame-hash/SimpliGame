@@ -325,4 +325,44 @@ export const api = {
     const data = await parseJson(await fetch(`/api/reels/${reelId}/export`, { method: 'POST' }));
     return data.export as { status: string; message: string };
   },
+
+  async generateEnrollToken(playerId: string) {
+    const data = await parseJson(await fetch(`/api/players/${playerId}/enroll-token`, { method: 'POST' }));
+    return data as { enrollToken: string; publicPath: string };
+  },
+
+  async getPublicEnroll(token: string) {
+    const data = await parseJson(await fetch(`/api/public/enroll/${token}`));
+    return data.enroll as import('./types').EnrollInfo;
+  },
+
+  async submitEnroll(token: string, body: { phone: string; displayName?: string; optIn: boolean }) {
+    const data = await parseJson(
+      await fetch(`/api/public/enroll/${token}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    );
+    return data as { opted_in: boolean; masked_phone: string };
+  },
+
+  async getFamily(playerId: string) {
+    const data = await parseJson(await fetch(`/api/players/${playerId}/family`));
+    return data.contacts as import('./types').FamilyContact[];
+  },
+
+  async removeFamily(contactId: string) {
+    await parseJson(await fetch(`/api/family/${contactId}`, { method: 'DELETE' }));
+  },
+
+  async getSmsLog(gameId: string) {
+    const data = await parseJson(await fetch(`/api/games/${gameId}/sms-log`));
+    return data.log as import('./types').SmsLogRow[];
+  },
+
+  async notifyHighlights(gameId: string) {
+    const data = await parseJson(await fetch(`/api/games/${gameId}/notify-highlights`, { method: 'POST' }));
+    return data as { attempted: number; sent: number; logged: number; failed: number };
+  },
 };
