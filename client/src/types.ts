@@ -96,3 +96,51 @@ export interface PublicWatch {
   events: PublicWatchEvent[];
   boxScore: PublicWatchBoxRow[];
 }
+
+/** Recruiting profile: coach-editable bio + measurables, publish token
+ *  (coach-side only — never exposed on the public payload). */
+export interface PlayerProfile {
+  id: string;
+  player_id: string;
+  bio: string;
+  height: string;
+  graduation_year: string;
+  positions_text: string;
+  school: string;
+  club_team: string;
+  profile_token: string | null;
+  profile_published: boolean;
+}
+
+/** Auto-aggregated stats: career totals by stat type, per-game breakdown,
+ *  and highlight events with video links. */
+export interface PlayerProfileStats {
+  totals: Record<string, number>;
+  totalPoints: number;
+  gamesPlayed: number;
+  byGame: { opponent: string; date: string; stats: Record<string, number>; points: number }[];
+  highlights: {
+    stat_type: string;
+    points: number;
+    video_seconds: number;
+    created_at: string;
+    opponent: string;
+    youtube_video_id: string | null;
+  }[];
+}
+
+/** Public profile payload: ONLY this player's surface. No roster,
+ *  no other players, no org details, no internal IDs. */
+export interface PublicProfile {
+  name: string;
+  jersey_number: string;
+  position: string;
+  team_name: string;
+  bio: string;
+  height: string;
+  graduation_year: string;
+  positions_text: string;
+  school: string;
+  club_team: string;
+  stats: PlayerProfileStats;
+}
