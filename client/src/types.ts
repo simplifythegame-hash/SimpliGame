@@ -20,6 +20,9 @@ export interface Player {
   name: string;
   jersey_number: string;
   position: string;
+  // Unlisted family-enrollment link token (coach-side only — the public
+  // enroll page shows only the player's first name + team name).
+  enroll_token: string | null;
 }
 
 export interface Game {
@@ -159,6 +162,35 @@ export interface ReelProject {
   status: 'draft' | 'ready';
   created_at: string;
   updated_at: string;
+}
+
+/** Family enrollment: coach-side contact — MASKED number only. The
+ *  full number never appears in any API response. */
+export interface FamilyContact {
+  id: string;
+  player_id: string;
+  masked_phone: string;
+  display_name: string;
+  opted_in: boolean;
+  created_at: string;
+}
+
+/** SMS delivery log row — masked number only. */
+export interface SmsLogRow {
+  id: string;
+  game_id: string | null;
+  message_type: 'go_live' | 'highlights';
+  status: 'sent' | 'logged' | 'failed';
+  masked_phone: string | null;
+  provider_sid: string | null;
+  error: string | null;
+  created_at: string;
+}
+
+/** Public enroll page payload: ONLY the player's first name + team. */
+export interface EnrollInfo {
+  player_first_name: string;
+  team_name: string;
 }
 
 /** Public profile payload: ONLY this player's surface. No roster,
