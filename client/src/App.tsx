@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from './api';
-import type { Game, Player, PublicWatch, Workspace } from './types';
+import type { Game, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, Workspace } from './types';
 import YouTubePlayer from './components/YouTubePlayer';
 import './styles.css';
 
@@ -17,17 +17,22 @@ const STAT_BUTTONS: { label: string; points: number }[] = [
   { label: 'Error', points: 0 },
 ];
 
-type View = { kind: 'home' } | { kind: 'live'; gameId: string } | { kind: 'detail'; gameId: string };
+type View = { kind: 'home' } | { kind: 'live'; gameId: string } | { kind: 'detail'; gameId: string } | { kind: 'profile'; playerId: string };
 
 export default function App() {
-  // Public watch route: /watch/<token> renders the standalone watch page
-  // INSTEAD of the app shell — no nav, no login, no editing, and no
-  // workspace fetch. The pathname never changes during a page load, so
-  // this early return is stable across renders.
+  // Public routes render standalone pages INSTEAD of the app shell — no
+  // nav, no login, no editing, and no workspace fetch. The pathname
+  // never changes during a page load, so these early returns are stable
+  // across renders.
   const watchMatch =
     typeof window !== 'undefined' ? window.location.pathname.match(/^\/watch\/([^/]+)$/) : null;
   if (watchMatch) {
     return <WatchPage token={watchMatch[1]} />;
+  }
+  const profileMatch =
+    typeof window !== 'undefined' ? window.location.pathname.match(/^\/profile\/([^/]+)$/) : null;
+  if (profileMatch) {
+    return <ProfilePage token={profileMatch[1]} />;
   }
 
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
@@ -66,9 +71,11 @@ export default function App() {
     [workspace, selectedTeamId],
   );
   const currentGame =
-    view.kind !== 'home' ? workspace?.games.find((g) => g.id === view.gameId) : undefined;
+    view.kind === 'live' || view.kind === 'detail'
+      ? workspace?.games.find((g) => g.id === view.gameId)
+      : undefined;
 
-  async function run(action: () => Promise<void>) {
+  async function run(action: () => Promise<unknown>) {
     setError('');
     try {
       await action();
@@ -217,7 +224,8 @@ export default function App() {
               <ul className="list">
                 {roster.map((p) => (
                   <li key={p.id}>
-                    #{p.jersey_number} {p.name} — {p.position}
+                    #{p.jersey_number} {p.name} — {p.position}{' '}
+                    <button onClick={() => setView({ kind: 'profile', playerId: p.id })}>Profile</button>
                   </li>
                 ))}
               </ul>
@@ -307,6 +315,13 @@ export default function App() {
           }}
           onBack={() => setView({ kind: 'home' })}
           onLive={() => setView({ kind: 'live', gameId: currentGame.id })}
+        />
+      )}
+
+      {view.kind === 'profile' && (
+        <PlayerProfileScreen
+          player={workspace.players.find((p) => p.id === view.playerId)}
+          onBack={() => setView({ kind: 'home' })}
         />
       )}
     </div>
@@ -609,6 +624,385 @@ function GameDetailScreen(props: {
         })}
       </ul>
     </section>
+  );
+}
+
+/** Format a video timestamp (seconds) as m:ss for highlight links. */
+function formatTimestamp(seconds: number) {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function videoLink(videoId: string | null, seconds: number) {
+  if (!videoId) return null;
+  return `https://www.youtube.com/watch?v=${videoId}&t=${seconds}s`;
+}
+
+/** Shared stats display: career totals + per-game breakdown. Read-only —
+ *  stats are always computed from the player's game events. */
+function ProfileStats({ stats }: { stats: PlayerProfileStats }) {
+  const totalEntries = Object.entries(stats.totals);
+  return (
+    <>
+      <h3>Career stats</h3>
+      {totalEntries.length === 0 ? (
+        <p>No stats logged yet — stats appear automatically as events are tagged in games.</p>
+      ) : (
+        <>
+          <p>
+            {stats.gamesPlayed} game{stats.gamesPlayed === 1 ? '' : 's'} · {stats.totalPoints} points
+          </p>
+          <table className="boxscore">
+            <thead>
+              <tr>
+                <th>Stat</th>
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {totalEntries.map(([stat, count]) => (
+                <tr key={stat}>
+                  <td>{stat}</td>
+                  <td>{count}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+
+      {stats.byGame.length > 0 && (
+        <>
+          <h4>By game</h4>
+          <ul className="list">
+            {stats.byGame.map((g, i) => (
+              <li key={i}>
+                vs {g.opponent || 'TBD'} · {g.date} —{' '}
+                {Object.entries(g.stats).map(([k, v]) => `${k}: ${v}`).join(' · ')} ({g.points} pts)
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </>
+  );
+}
+
+function ProfileHighlights({ stats }: { stats: PlayerProfileStats }) {
+  if (stats.highlights.length === 0) return null;
+  return (
+    <>
+      <h3>Highlights</h3>
+      <ul className="list">
+        {stats.highlights.map((h, i) => {
+          const link = videoLink(h.youtube_video_id, h.video_seconds);
+          return (
+            <li key={i}>
+              {h.stat_type}
+              {h.points > 0 ? ` (+${h.points})` : ''} — vs {h.opponent || 'TBD'} ·{' '}
+              {link ? (
+                <a href={link} target="_blank" rel="noreferrer">
+                  Watch at {formatTimestamp(h.video_seconds)}
+                </a>
+              ) : (
+                `at ${formatTimestamp(h.video_seconds)} (no video attached)`
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </>
+  );
+}
+
+/**
+ * Coach-side player profile: editable bio + measurables, auto-aggregated
+ * stats (read-only), highlight events with video-timestamp links, and
+ * publish controls using the same token model as game watch links.
+ */
+function PlayerProfileScreen(props: { player: Player | undefined; onBack: () => void }) {
+  const [data, setData] = useState<{
+    player: Player;
+    profile: PlayerProfile | null;
+    stats: PlayerProfileStats;
+  } | null>(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saved, setSaved] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [bio, setBio] = useState('');
+  const [height, setHeight] = useState('');
+  const [graduationYear, setGraduationYear] = useState('');
+  const [positionsText, setPositionsText] = useState('');
+  const [school, setSchool] = useState('');
+  const [clubTeam, setClubTeam] = useState('');
+
+  const playerId = props.player?.id;
+
+  const load = useCallback(async () => {
+    if (!playerId) return;
+    const result = await api.getPlayerProfile(playerId);
+    setData(result);
+    setBio(result.profile?.bio ?? '');
+    setHeight(result.profile?.height ?? '');
+    setGraduationYear(result.profile?.graduation_year ?? '');
+    setPositionsText(result.profile?.positions_text ?? '');
+    setSchool(result.profile?.school ?? '');
+    setClubTeam(result.profile?.club_team ?? '');
+  }, [playerId]);
+
+  useEffect(() => {
+    if (!playerId) {
+      setLoading(false);
+      return;
+    }
+    load()
+      .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load profile'))
+      .finally(() => setLoading(false));
+  }, [playerId, load]);
+
+  if (!props.player) {
+    return (
+      <section>
+        <button onClick={props.onBack}>← Back</button>
+        <p>Player not found.</p>
+      </section>
+    );
+  }
+
+  if (loading) return <section><p>Loading profile…</p></section>;
+
+  const player = props.player;
+  const profile = data?.profile ?? null;
+
+  async function run(action: () => Promise<unknown>) {
+    setError('');
+    setSaved(false);
+    try {
+      await action();
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Something went wrong');
+    }
+  }
+
+  return (
+    <section>
+      <button onClick={props.onBack}>← Back</button>
+      <h2>
+        Profile — #{player.jersey_number} {player.name} · {player.position}
+      </h2>
+
+      {error && <p className="error">{error}</p>}
+      {saved && <p>Profile saved.</p>}
+
+      <h3>Bio & measurables</h3>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          run(async () => {
+            await api.updatePlayerProfile(player.id, {
+              bio,
+              height,
+              graduation_year: graduationYear,
+              positions_text: positionsText,
+              school,
+              club_team: clubTeam,
+            });
+            setSaved(true);
+          });
+        }}
+      >
+        <div className="row">
+          <label className="field-label">
+            Bio
+            <textarea value={bio} onChange={(e) => setBio(e.target.value)} maxLength={2000} rows={4} className="wide" />
+          </label>
+        </div>
+        <div className="row">
+          <label className="field-label">
+            Height
+            <input value={height} onChange={(e) => setHeight(e.target.value)} maxLength={100} placeholder="e.g. 5'10&quot;" />
+          </label>
+          <label className="field-label">
+            Graduation year
+            <input value={graduationYear} onChange={(e) => setGraduationYear(e.target.value)} maxLength={100} placeholder="e.g. 2027" />
+          </label>
+          <label className="field-label">
+            Positions
+            <input value={positionsText} onChange={(e) => setPositionsText(e.target.value)} maxLength={100} placeholder="e.g. Outside Hitter / DS" />
+          </label>
+        </div>
+        <div className="row">
+          <label className="field-label">
+            School
+            <input value={school} onChange={(e) => setSchool(e.target.value)} maxLength={100} />
+          </label>
+          <label className="field-label">
+            Club team
+            <input value={clubTeam} onChange={(e) => setClubTeam(e.target.value)} maxLength={100} />
+          </label>
+        </div>
+        <button type="submit">Save profile</button>
+      </form>
+
+      {data && (
+        <>
+          <ProfileStats stats={data.stats} />
+          <ProfileHighlights stats={data.stats} />
+        </>
+      )}
+
+      <h3>Public profile link</h3>
+      {profile?.profile_published && profile.profile_token ? (
+        <>
+          <p>Published — anyone with the link can view this profile. No login needed.</p>
+          <div className="row">
+            <input
+              readOnly
+              value={`${window.location.origin}/profile/${profile.profile_token}`}
+              className="wide"
+              onFocus={(e) => e.target.select()}
+            />
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(
+                    `${window.location.origin}/profile/${profile.profile_token}`,
+                  );
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                } catch {
+                  // Clipboard unavailable — the input above is selected on
+                  // focus, so the coach can copy it manually.
+                }
+              }}
+            >
+              {copied ? 'Copied!' : 'Copy link'}
+            </button>
+          </div>
+          <div className="row">
+            <button onClick={() => run(() => api.unpublishProfile(player.id))}>Unpublish</button>
+            <button onClick={() => run(() => api.revokeProfileLink(player.id))}>Regenerate link</button>
+          </div>
+          <p>
+            <small>Regenerating the link kills the old one — anyone with the old link can no longer view the profile.</small>
+          </p>
+        </>
+      ) : (
+        <>
+          <p>Not published — the profile link only works after you publish it.</p>
+          <button onClick={() => run(() => api.publishProfile(player.id))}>Publish profile link</button>
+        </>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Public profile page — the ONLY thing a /profile/<token> link renders.
+ * Standalone: no app nav, no login, no editing, no workspace fetch.
+ * Shows only the published player: header, bio, measurables, stats,
+ * highlights with video links. Print/PDF via the browser's print dialog.
+ * A failed load means the link is bad, revoked, or unpublished — all
+ * three look identical by design, so the message never says which.
+ */
+function ProfilePage({ token }: { token: string }) {
+  const [profile, setProfile] = useState<PublicProfile | null>(null);
+  const [notFound, setNotFound] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getPublicProfile(token)
+      .then((p) => {
+        if (!cancelled) setProfile(p);
+      })
+      .catch(() => {
+        if (!cancelled) setNotFound(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  if (notFound) {
+    return (
+      <div className="page">
+        <header className="org-header">
+          <h1>SimpliGame</h1>
+        </header>
+        <h2>This profile isn&rsquo;t published.</h2>
+        <p>
+          The link may be mistyped, the profile may not be published yet, or the coach may have
+          shared a new link. Ask the coach for the current profile link.
+        </p>
+      </div>
+    );
+  }
+
+  if (!profile) {
+    return (
+      <div className="page">
+        <p>Loading profile…</p>
+      </div>
+    );
+  }
+
+  const measurables: [string, string][] = [
+    ['Height', profile.height],
+    ['Graduation year', profile.graduation_year],
+    ['Positions', profile.positions_text],
+    ['School', profile.school],
+    ['Club team', profile.club_team],
+  ].filter(([, v]) => v !== '') as [string, string][];
+
+  return (
+    <div className="page">
+      <header className="org-header">
+        <h1>SimpliGame</h1>
+        <p className="tagline">Recruiting profile</p>
+      </header>
+
+      <h2>
+        #{profile.jersey_number} {profile.name}
+      </h2>
+      <p>
+        {profile.position} · {profile.team_name}
+      </p>
+
+      {profile.bio && (
+        <>
+          <h3>About</h3>
+          <p>{profile.bio}</p>
+        </>
+      )}
+
+      {measurables.length > 0 && (
+        <>
+          <h3>Measurables</h3>
+          <table className="boxscore">
+            <tbody>
+              {measurables.map(([label, value]) => (
+                <tr key={label}>
+                  <td>{label}</td>
+                  <td>{value}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+
+      <ProfileStats stats={profile.stats} />
+      <ProfileHighlights stats={profile.stats} />
+
+      <div className="row no-print">
+        <button onClick={() => window.print()}>Print / Save as PDF</button>
+      </div>
+    </div>
   );
 }
 
