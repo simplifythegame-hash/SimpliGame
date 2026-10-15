@@ -187,6 +187,15 @@ export interface SmsLogRow {
   created_at: string;
 }
 
+/** Google Sheets export record — a real Sheet link, never a fake. */
+export interface SheetExport {
+  id: string;
+  game_id: string;
+  sheet_id: string;
+  sheet_url: string;
+  created_at: string;
+}
+
 /** Public enroll page payload: ONLY the player's first name + team. */
 export interface EnrollInfo {
   player_first_name: string;
