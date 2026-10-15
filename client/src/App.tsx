@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from './api';
-import type { Game, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, Workspace } from './types';
+import type { EnrollInfo, FamilyContact, Game, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SmsLogRow, Workspace } from './types';
 import YouTubePlayer from './components/YouTubePlayer';
 import './styles.css';
 
@@ -33,6 +33,11 @@ export default function App() {
     typeof window !== 'undefined' ? window.location.pathname.match(/^\/profile\/([^/]+)$/) : null;
   if (profileMatch) {
     return <ProfilePage token={profileMatch[1]} />;
+  }
+  const enrollMatch =
+    typeof window !== 'undefined' ? window.location.pathname.match(/^\/enroll\/([^/]+)$/) : null;
+  if (enrollMatch) {
+    return <EnrollPage token={enrollMatch[1]} />;
   }
 
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
@@ -548,6 +553,16 @@ function LiveGameScreen(props: {
         )}
         {props.game.status === 'final' && <span>Final — this game is closed.</span>}
       </div>
+      {props.game.status === 'draft' && !props.game.published && (
+        <p>
+          <small>Publish first to text families the watch link when you go live.</small>
+        </p>
+      )}
+      {props.game.status === 'draft' && props.game.published && (
+        <p>
+          <small>Families get the watch link by text the moment you go live.</small>
+        </p>
+      )}
 
       <h3>On court — tap a player, then tap a stat</h3>
       <div className="cards">
@@ -669,6 +684,25 @@ function GameDetailScreen(props: {
   const [autoPreset, setAutoPreset] = useState<'hype' | 'clean' | 'simple'>('hype');
   const [autoBusy, setAutoBusy] = useState(false);
   const [autoError, setAutoError] = useState('');
+  // Family texts: delivery log is best-effort — a failed fetch leaves the
+  // section empty rather than breaking the whole detail screen.
+  const [smsLog, setSmsLog] = useState<SmsLogRow[]>([]);
+  const [smsBusy, setSmsBusy] = useState(false);
+  const [smsResult, setSmsResult] = useState('');
+  const [smsError, setSmsError] = useState('');
+
+  async function loadSmsLog() {
+    try {
+      setSmsLog(await api.getSmsLog(props.game.id));
+    } catch {
+      // Best-effort: the log stays as-is on failure.
+    }
+  }
+
+  useEffect(() => {
+    void loadSmsLog();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.game.id]);
   const boxScore = useMemo(() => {
     const byPlayer = new Map<string, { name: string; stats: Record<string, number>; points: number }>();
     for (const e of props.events) {
@@ -701,6 +735,16 @@ function GameDetailScreen(props: {
         )}
         {props.game.status === 'final' && <span>Final — this game is closed.</span>}
       </div>
+      {props.game.status === 'draft' && !props.game.published && (
+        <p>
+          <small>Publish first to text families the watch link when you go live.</small>
+        </p>
+      )}
+      {props.game.status === 'draft' && props.game.published && (
+        <p>
+          <small>Families get the watch link by text the moment you go live.</small>
+        </p>
+      )}
 
       <h3>Video</h3>
       <form
@@ -766,6 +810,55 @@ function GameDetailScreen(props: {
           <p>Not published — the watch link only works after you publish this game.</p>
           <button onClick={props.onPublish}>Publish watch link</button>
         </>
+      )}
+
+      <h3>Family texts</h3>
+      {!props.game.published ? (
+        <p>Publish this game first — texts need a watch link to send.</p>
+      ) : (
+        <p>
+          Families get the watch link by text the moment you tap Go Live. Highlights alerts go
+          out with the button below.
+        </p>
+      )}
+      <div className="row">
+        <button
+          disabled={!props.game.published || smsBusy}
+          onClick={async () => {
+            setSmsBusy(true);
+            setSmsResult('');
+            setSmsError('');
+            try {
+              const summary = await api.notifyHighlights(props.game.id);
+              setSmsResult(
+                `Highlights alerts: ${summary.attempted} attempted — ${summary.sent} sent, ${summary.logged} recorded (Twilio not configured), ${summary.failed} failed.`,
+              );
+              await loadSmsLog();
+            } catch (e) {
+              setSmsError(e instanceof Error ? e.message : 'Highlights alerts failed');
+            } finally {
+              setSmsBusy(false);
+            }
+          }}
+        >
+          {smsBusy ? 'Sending…' : 'Notify families (highlights ready)'}
+        </button>
+      </div>
+      {smsResult && <p>{smsResult}</p>}
+      {smsError && <p className="error">{smsError}</p>}
+      {smsLog.length === 0 ? (
+        <p>No texts recorded yet.</p>
+      ) : (
+        <ul className="list">
+          {smsLog.map((row) => (
+            <li key={row.id}>
+              {row.message_type === 'go_live' ? 'Go Live' : 'Highlights'} →{' '}
+              {row.masked_phone ?? 'Removed contact'} — {row.status}
+              {row.status === 'logged' ? ' (Twilio not configured — recorded, not sent)' : ''}
+              {row.error ? ` — ${row.error}` : ''} · {new Date(row.created_at).toLocaleTimeString()}
+            </li>
+          ))}
+        </ul>
       )}
 
       <h3>Auto Reel</h3>
@@ -948,6 +1041,10 @@ function PlayerProfileScreen(props: { player: Player | undefined; onBack: () => 
   const [positionsText, setPositionsText] = useState('');
   const [school, setSchool] = useState('');
   const [clubTeam, setClubTeam] = useState('');
+  // Family enrollment: masked contacts only — full numbers never reach
+  // this screen.
+  const [family, setFamily] = useState<FamilyContact[]>([]);
+  const [enrollCopied, setEnrollCopied] = useState(false);
 
   const playerId = props.player?.id;
 
@@ -955,6 +1052,7 @@ function PlayerProfileScreen(props: { player: Player | undefined; onBack: () => 
     if (!playerId) return;
     const result = await api.getPlayerProfile(playerId);
     setData(result);
+    setFamily(await api.getFamily(playerId));
     setBio(result.profile?.bio ?? '');
     setHeight(result.profile?.height ?? '');
     setGraduationYear(result.profile?.graduation_year ?? '');
@@ -1063,6 +1161,85 @@ function PlayerProfileScreen(props: { player: Player | undefined; onBack: () => 
           <ProfileStats stats={data.stats} />
           <ProfileHighlights stats={data.stats} />
         </>
+      )}
+
+      <h3>Family text alerts</h3>
+      <p>
+        Families sign themselves up with their own number — the coach never enters phone
+        numbers. Numbers stay masked here.
+      </p>
+      {data?.player.enroll_token ? (
+        <>
+          <p>Share this link with the player&apos;s family:</p>
+          <div className="row">
+            <input
+              readOnly
+              value={`${window.location.origin}/enroll/${data.player.enroll_token}`}
+              className="wide"
+              onFocus={(e) => e.target.select()}
+            />
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(
+                    `${window.location.origin}/enroll/${data.player.enroll_token}`,
+                  );
+                  setEnrollCopied(true);
+                  setTimeout(() => setEnrollCopied(false), 2000);
+                } catch {
+                  // Clipboard unavailable — the input above is selected on
+                  // focus, so the coach can copy it manually.
+                }
+              }}
+            >
+              {enrollCopied ? 'Copied!' : 'Copy link'}
+            </button>
+          </div>
+          <div className="row">
+            <button
+              onClick={() => run(async () => {
+                await api.generateEnrollToken(player.id);
+              })}
+            >
+              Regenerate link
+            </button>
+          </div>
+          <p>
+            <small>Regenerating the link kills the old one.</small>
+          </p>
+        </>
+      ) : (
+        <>
+          <p>No enrollment link yet.</p>
+          <button
+            onClick={() => run(async () => {
+              await api.generateEnrollToken(player.id);
+            })}
+          >
+            Create enrollment link
+          </button>
+        </>
+      )}
+      <h4>Enrolled contacts</h4>
+      {family.length === 0 ? (
+        <p>No family contacts yet.</p>
+      ) : (
+        <ul className="list">
+          {family.map((c) => (
+            <li key={c.id}>
+              {c.display_name ? `${c.display_name} — ` : ''}
+              {c.masked_phone} {c.opted_in ? '(opted in)' : '(opted out)'}{' '}
+              <button
+                onClick={() => run(async () => {
+                  await api.removeFamily(c.id);
+                })}
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
 
       <h3>Public profile link</h3>
@@ -1809,5 +1986,165 @@ function ReelStudioScreen(props: { reelId: string; workspace: Workspace; onBack:
         </ul>
       )}
     </section>
+  );
+}
+
+/**
+ * Public family-enrollment page — the ONLY thing an /enroll/<token> link
+ * renders. Standalone: no app nav, no login, no editing, no workspace
+ * fetch. Shows only the player's first name + team name. The family
+ * enters their OWN number; nothing here ever displays an existing
+ * number. A failed load means the link is bad or was regenerated — the
+ * message never says which.
+ */
+function EnrollPage({ token }: { token: string }) {
+  const [info, setInfo] = useState<EnrollInfo | null>(null);
+  const [notFound, setNotFound] = useState(false);
+  const [phone, setPhone] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState<{ optedIn: boolean; masked: string } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getPublicEnroll(token)
+      .then((result) => {
+        if (!cancelled) setInfo(result);
+      })
+      .catch(() => {
+        if (!cancelled) setNotFound(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  if (notFound) {
+    return (
+      <div className="page">
+        <header className="org-header">
+          <h1>SimpliGame</h1>
+        </header>
+        <h2>This enrollment link isn&rsquo;t valid.</h2>
+        <p>
+          The link may be mistyped, or the coach may have shared a new one. Ask the coach for
+          the current enrollment link.
+        </p>
+      </div>
+    );
+  }
+
+  if (!info) {
+    return (
+      <div className="page">
+        <p>Loading…</p>
+      </div>
+    );
+  }
+
+  if (done) {
+    return (
+      <div className="page">
+        <header className="org-header">
+          <h1>SimpliGame</h1>
+          <p className="tagline">Family text alerts</p>
+        </header>
+        {done.optedIn ? (
+          <>
+            <h2>You&rsquo;re signed up.</h2>
+            <p>
+              You&rsquo;ll get a text at {done.masked} when {info.player_first_name}&rsquo;s games
+              go live, plus highlights alerts after games.
+            </p>
+          </>
+        ) : (
+          <>
+            <h2>You&rsquo;ve opted out.</h2>
+            <p>
+              You won&rsquo;t get texts for {info.player_first_name}. You can sign up again any
+              time with the same link.
+            </p>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  async function submit(optIn: boolean) {
+    setError('');
+    setBusy(true);
+    try {
+      const result = await api.submitEnroll(token, {
+        phone,
+        displayName: displayName.trim() || undefined,
+        optIn,
+      });
+      setDone({ optedIn: result.opted_in, masked: result.masked_phone });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Something went wrong');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="page">
+      <header className="org-header">
+        <h1>SimpliGame</h1>
+        <p className="tagline">Family text alerts</p>
+      </header>
+      <h2>
+        Text alerts for {info.player_first_name} — {info.team_name}
+      </h2>
+      <p>
+        Enter your own phone number to get a text the moment {info.player_first_name}&rsquo;s
+        games go live, plus highlights alerts after games. Your number is only used for these
+        alerts — it&apos;s never shown to anyone.
+      </p>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit(true);
+        }}
+      >
+        <div className="row">
+          <label className="field-label">
+            Your phone number
+            <input
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              placeholder="(555) 123-4567"
+              inputMode="tel"
+              autoComplete="tel"
+              required
+              className="wide"
+            />
+          </label>
+        </div>
+        <div className="row">
+          <label className="field-label">
+            Your name (optional)
+            <input
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              placeholder="e.g. Mom"
+              maxLength={100}
+              className="wide"
+            />
+          </label>
+        </div>
+        {error && <p className="error">{error}</p>}
+        <div className="row">
+          <button type="submit" disabled={busy}>
+            {busy ? 'Saving…' : 'Opt in to texts'}
+          </button>
+          <button type="button" disabled={busy} onClick={() => void submit(false)}>
+            Opt out of texts
+          </button>
+        </div>
+      </form>
+    </div>
   );
 }
