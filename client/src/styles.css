@@ -58,11 +58,37 @@ body {
 }
 
 input,
-select {
+select,
+textarea {
   padding: 0.5rem;
   border: 1px solid #ccc;
   border-radius: 6px;
   font-size: 1rem;
+  font-family: inherit;
+}
+
+.field-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+}
+
+@media print {
+  /* Print/PDF of a public profile: hide interactive controls, keep the
+   * content. The org header stays as the profile letterhead. */
+  .no-print {
+    display: none;
+  }
+
+  body {
+    background: #fff;
+  }
+
+  .page {
+    max-width: none;
+    padding: 0;
+  }
 }
 
 input.wide {
