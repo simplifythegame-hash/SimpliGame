@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import express from 'express';
 import path from 'path';
 import { getOrCreateOrganization, getPool } from './db';
+import { sendSms } from './sms';
 import { extractYouTubeVideoId } from './youtube';
 
 const app = express();
@@ -527,7 +528,17 @@ app.patch(
         [game.id, status === 'live' ? 'Game started' : 'Game ended'],
       );
       await client.query('COMMIT');
-      res.json({ ok: true, game: updated.rows[0] });
+      const updatedGame = updated.rows[0];
+      // Go Live → text families the watch link, AFTER the transition
+      // commits. Fire-and-forget: sending must never block the
+      // transition or fail it. Only published games have a link to send;
+      // sendGameSms no-ops for unpublished games.
+      if (status === 'live') {
+        void sendGameSms(db, updatedGame, 'go_live').catch((err) => {
+          console.error('Go-live SMS failed:', err);
+        });
+      }
+      res.json({ ok: true, game: updatedGame });
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -1275,6 +1286,301 @@ app.post(
           'This is a placeholder export, not a real video file. Real MP4 rendering comes in a later production build — your reel project (clips, order, trim, overlays, music) is saved and ready for it.',
       },
     });
+  }),
+);
+
+// ---------------------------------------------------- family SMS (Twilio)
+// Families SELF-ENROLL their own numbers via an unlisted enroll link
+// per player — the coach never types in anyone's number. Coach views
+// show MASKED numbers only (•••-•••-1234); full numbers never appear in
+// any API response, public or coach-side. The watch link goes out THE
+// MOMENT the coach taps Go Live (see the status-transition hook above),
+// never 30 minutes before. Real sending uses Twilio; with no Twilio
+// credentials configured the app runs in LOG-ONLY mode — every attempt
+// is recorded as 'logged' and nothing claims it was sent.
+
+const PUBLIC_ORIGIN = process.env.PUBLIC_URL ?? 'https://simpligame.onrender.com';
+
+function maskPhone(phoneE164: string | null): string | null {
+  if (!phoneE164) return null;
+  const last4 = phoneE164.replace(/\D/g, '').slice(-4);
+  return `•••-•••-${last4}`;
+}
+
+// Normalize a phone number to E.164. Accepts 10-digit US numbers,
+// 11-digit numbers starting with 1, or a leading + already present.
+// Anything else is rejected (400) — never stored half-normalized.
+function normalizePhone(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const hasPlus = trimmed.startsWith('+');
+  const digits = trimmed.replace(/\D/g, '');
+  if (hasPlus) {
+    if (digits.length < 10 || digits.length > 15) return null;
+    return `+${digits}`;
+  }
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
+  return null;
+}
+
+type SmsMessageType = 'go_live' | 'highlights';
+
+async function sendGameSms(
+  db: ReturnType<typeof getPool>,
+  game: {
+    id: string;
+    team_id: string;
+    opponent: string;
+    publish_token: string | null;
+    published: boolean;
+  },
+  type: SmsMessageType,
+): Promise<{ attempted: number; sent: number; logged: number; failed: number }> {
+  const summary = { attempted: 0, sent: 0, logged: 0, failed: 0 };
+  if (!game.published || !game.publish_token) return summary;
+  const team = await db.query('SELECT name FROM teams WHERE id = $1', [game.team_id]);
+  const teamName = team.rows[0]?.name ?? 'Your team';
+  const link = `${PUBLIC_ORIGIN}/watch/${game.publish_token}`;
+  const body =
+    type === 'go_live'
+      ? `${teamName} vs ${game.opponent || 'TBD'} is live! Watch: ${link}`
+      : `${teamName} vs ${game.opponent || 'TBD'} — highlights are ready! Watch: ${link}`;
+  const contacts = await db.query(
+    `SELECT fc.id, fc.phone_e164 FROM family_contacts fc
+     JOIN players p ON p.id = fc.player_id
+     WHERE p.team_id = $1 AND fc.opted_in = true`,
+    [game.team_id],
+  );
+  // One message per unique number: a family enrolled for two players on
+  // the same team gets one text, not two.
+  const seen = new Map<string, string>();
+  for (const c of contacts.rows) {
+    if (!seen.has(c.phone_e164)) seen.set(c.phone_e164, c.id);
+  }
+  for (const [phone, contactId] of seen) {
+    summary.attempted += 1;
+    const result = await sendSms(phone, body);
+    let status: 'sent' | 'logged' | 'failed';
+    let providerSid: string | null = null;
+    let error: string | null = null;
+    if (result.mode === 'sent') {
+      status = 'sent';
+      providerSid = result.sid;
+      summary.sent += 1;
+    } else if (result.mode === 'logged') {
+      status = 'logged';
+      summary.logged += 1;
+    } else {
+      status = 'failed';
+      error = result.error;
+      summary.failed += 1;
+    }
+    await db.query(
+      `INSERT INTO sms_log (game_id, contact_id, message_type, status, provider_sid, error)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [game.id, contactId, type, status, providerSid, error],
+    );
+  }
+  return summary;
+}
+
+// Coach: generate (or regenerate) a player's enrollment link. Regenerating
+// kills the old link — same token model as watch/profile links.
+app.post(
+  '/api/players/:playerId/enroll-token',
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const playerId = String(req.params.playerId);
+    const player = await getOrgPlayer(db, org.id, playerId);
+    if (!player) {
+      res.status(404).json({ ok: false, error: 'Player not found.' });
+      return;
+    }
+    const token = newPublishToken();
+    const result = await db.query('UPDATE players SET enroll_token = $1 WHERE id = $2 RETURNING *', [
+      token,
+      playerId,
+    ]);
+    res.json({ ok: true, player: result.rows[0], enrollToken: token, publicPath: `/enroll/${token}` });
+  }),
+);
+
+// Public enroll page (no auth): ONLY the player's first name + team
+// name. No contacts, no numbers, no org details. A bad token gets the
+// same generic 404 as every other token-only route.
+app.get(
+  '/api/public/enroll/:token',
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const row = await db.query(
+      `SELECT p.name, t.name AS team_name
+       FROM players p JOIN teams t ON t.id = p.team_id
+       WHERE p.enroll_token = $1`,
+      [req.params.token],
+    );
+    if (row.rows.length === 0) {
+      res.status(404).json({ ok: false, error: 'Enrollment link not found.' });
+      return;
+    }
+    const firstName = row.rows[0].name.split(/\s+/)[0] ?? row.rows[0].name;
+    res.json({ ok: true, enroll: { player_first_name: firstName, team_name: row.rows[0].team_name } });
+  }),
+);
+
+// Public enroll submit (no auth): the family enters their OWN number.
+// Upserts on (player_id, phone_e164) — re-enrolling updates the name /
+// opt-in flag instead of duplicating. The response carries only the
+// MASKED number — the full number is never echoed back.
+app.post(
+  '/api/public/enroll/:token',
+  asyncHandler(async (req, res) => {
+    const { phone, displayName, optIn } = req.body ?? {};
+    const e164 = normalizePhone(phone);
+    if (!e164) {
+      res.status(400).json({
+        ok: false,
+        error: 'Enter a valid phone number (10-digit US number, or +1 followed by 10 digits).',
+      });
+      return;
+    }
+    if (displayName !== undefined && (typeof displayName !== 'string' || displayName.trim().length > 100)) {
+      res.status(400).json({ ok: false, error: 'Name must be 100 characters or fewer.' });
+      return;
+    }
+    if (optIn !== undefined && typeof optIn !== 'boolean') {
+      res.status(400).json({ ok: false, error: 'optIn must be true or false.' });
+      return;
+    }
+    const optedIn = optIn === undefined ? true : optIn;
+    const db = getPool();
+    const row = await db.query('SELECT id FROM players WHERE enroll_token = $1', [req.params.token]);
+    if (row.rows.length === 0) {
+      res.status(404).json({ ok: false, error: 'Enrollment link not found.' });
+      return;
+    }
+    await db.query(
+      `INSERT INTO family_contacts (player_id, phone_e164, display_name, opted_in)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (player_id, phone_e164) DO UPDATE
+       SET display_name = EXCLUDED.display_name, opted_in = EXCLUDED.opted_in, updated_at = now()`,
+      [row.rows[0].id, e164, typeof displayName === 'string' ? displayName.trim() : '', optedIn],
+    );
+    res.json({ ok: true, opted_in: optedIn, masked_phone: maskPhone(e164) });
+  }),
+);
+
+// Coach: a player's enrolled family — MASKED numbers only.
+app.get(
+  '/api/players/:playerId/family',
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const playerId = String(req.params.playerId);
+    const player = await getOrgPlayer(db, org.id, playerId);
+    if (!player) {
+      res.status(404).json({ ok: false, error: 'Player not found.' });
+      return;
+    }
+    const rows = await db.query(
+      'SELECT * FROM family_contacts WHERE player_id = $1 ORDER BY created_at ASC',
+      [playerId],
+    );
+    res.json({
+      ok: true,
+      contacts: rows.rows.map((c) => ({
+        id: c.id,
+        player_id: c.player_id,
+        masked_phone: maskPhone(c.phone_e164),
+        display_name: c.display_name,
+        opted_in: c.opted_in,
+        created_at: c.created_at,
+      })),
+    });
+  }),
+);
+
+// Coach: remove an enrolled contact. Org-scoped via the join — a contact
+// from another org 404s instead of leaking.
+app.delete(
+  '/api/family/:contactId',
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const result = await db.query(
+      `DELETE FROM family_contacts fc USING players p, teams t
+       WHERE fc.id = $1 AND fc.player_id = p.id AND p.team_id = t.id AND t.org_id = $2
+       RETURNING fc.id`,
+      [String(req.params.contactId), org.id],
+    );
+    if (result.rows.length === 0) {
+      res.status(404).json({ ok: false, error: 'Contact not found.' });
+      return;
+    }
+    res.json({ ok: true, deleted: true });
+  }),
+);
+
+// Coach: a game's SMS delivery log — MASKED numbers only. Contacts
+// deleted after sending show as "Removed contact" (masked_phone null)
+// rather than leaking the number from a stale join.
+app.get(
+  '/api/games/:gameId/sms-log',
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const gameId = String(req.params.gameId);
+    const game = await getOrgGame(db, org.id, gameId);
+    if (!game) {
+      res.status(404).json({ ok: false, error: 'Game not found.' });
+      return;
+    }
+    const rows = await db.query(
+      `SELECT sl.*, fc.phone_e164 FROM sms_log sl
+       LEFT JOIN family_contacts fc ON fc.id = sl.contact_id
+       WHERE sl.game_id = $1 ORDER BY sl.created_at DESC`,
+      [gameId],
+    );
+    res.json({
+      ok: true,
+      log: rows.rows.map((r) => ({
+        id: r.id,
+        game_id: r.game_id,
+        message_type: r.message_type,
+        status: r.status,
+        provider_sid: r.provider_sid,
+        error: r.error,
+        created_at: r.created_at,
+        masked_phone: maskPhone(r.phone_e164 ?? null),
+      })),
+    });
+  }),
+);
+
+// Coach: highlights-ready alerts. Requires a published game — the alert
+// carries the watch link, and an unpublished game has no link to send.
+app.post(
+  '/api/games/:gameId/notify-highlights',
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const gameId = String(req.params.gameId);
+    const game = await getOrgGame(db, org.id, gameId);
+    if (!game) {
+      res.status(404).json({ ok: false, error: 'Game not found.' });
+      return;
+    }
+    if (!game.published || !game.publish_token) {
+      res.status(400).json({
+        ok: false,
+        error: 'Publish this game first — highlights alerts need a watch link to send.',
+      });
+      return;
+    }
+    const summary = await sendGameSms(db, game, 'highlights');
+    res.json({ ok: true, ...summary });
   }),
 );
 
