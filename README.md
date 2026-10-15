@@ -83,6 +83,20 @@ npm run dev --workspace=@simpligame/client   # http://localhost:5173
   scoring highlights best-first (Kills/Aces/Blocks, then Assists/Digs)
   with a preset (transitions + overlays + placeholder music), opens in
   Reel Studio for tweaking
+- Game status: draft → live ("Go Live") → final ("End Game") on the Live
+  screen and Game Detail; transitions are recorded in the event timeline.
+  A final game can't change status, and a draft must go live first.
+- Sub-undo: undoing a Substitution reverses the lineup swap (out-player
+  returns to the slot, in-player returns to the bench) in the same
+  transaction as removing the event. Subs recorded before migration 005
+  fall back to deleting the event only.
+- PWA installability: manifest + brand icons, install prompt (native
+  install where the browser offers it, Share → Add to Home Screen
+  instructions on iPhone), service worker (cache-first app shell +
+  static assets, network-first API). Offline stat tagging: stat events
+  that fail because the device is offline are queued in localStorage and
+  retried automatically on reconnect, with a visible queued count. Only
+  stat events queue — subs and other mutations need a connection.
 
 **Explicitly NOT in v1:** real auth/multi-coach logins, payments, real SMS
 (Twilio), real video rendering/clipping, AI stat analysis. Those arrive as
