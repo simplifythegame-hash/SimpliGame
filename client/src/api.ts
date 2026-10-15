@@ -365,4 +365,14 @@ export const api = {
     const data = await parseJson(await fetch(`/api/games/${gameId}/notify-highlights`, { method: 'POST' }));
     return data as { attempted: number; sent: number; logged: number; failed: number };
   },
+
+  async exportToSheets(gameId: string) {
+    const data = await parseJson(await fetch(`/api/games/${gameId}/export-sheets`, { method: 'POST' }));
+    return data as { notConfigured?: boolean; sheetId?: string; sheetUrl?: string };
+  },
+
+  async getSheetExports(gameId: string) {
+    const data = await parseJson(await fetch(`/api/games/${gameId}/exports`));
+    return data.exports as import('./types').SheetExport[];
+  },
 };
