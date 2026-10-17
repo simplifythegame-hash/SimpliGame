@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from './api';
-import type { EnrollInfo, FamilyContact, Game, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Workspace } from './types';
+import type { EnrollInfo, FamilyContact, Game, GameAnalysis, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Workspace } from './types';
 import YouTubePlayer from './components/YouTubePlayer';
 import './styles.css';
 
@@ -695,6 +695,20 @@ function GameDetailScreen(props: {
   const [sheetBusy, setSheetBusy] = useState(false);
   const [sheetResult, setSheetResult] = useState('');
   const [sheetError, setSheetError] = useState('');
+  // Post-game analysis: overview is computed server-side from the
+  // game's real data; review state is best-effort, same as SMS/Sheets.
+  const [analysis, setAnalysis] = useState<GameAnalysis | null>(null);
+  const [analysisError, setAnalysisError] = useState('');
+  const [analysisBusyKey, setAnalysisBusyKey] = useState<string | null>(null);
+  const [analysisInputs, setAnalysisInputs] = useState<Record<string, { correction: string; note: string }>>({});
+
+  async function loadAnalysis() {
+    try {
+      setAnalysis(await api.getAnalysis(props.game.id));
+    } catch (e) {
+      setAnalysisError(e instanceof Error ? e.message : 'Analysis failed to load');
+    }
+  }
 
   async function loadSmsLog() {
     try {
@@ -715,6 +729,7 @@ function GameDetailScreen(props: {
   useEffect(() => {
     void loadSmsLog();
     void loadSheetExports();
+    void loadAnalysis();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.game.id]);
   const boxScore = useMemo(() => {
@@ -1013,6 +1028,127 @@ function GameDetailScreen(props: {
             </li>
           ))}
         </ul>
+      )}
+
+      <h3>Post-Game Analysis</h3>
+      <p>
+        <small>
+          Overview computed from this game&apos;s recorded data — not AI. Check each section and
+          verify it; only verified sections count as official.
+        </small>
+      </p>
+      {analysisError && <p className="error">{analysisError}</p>}
+      {analysis && (
+        <>
+          <p>
+            Overall: <strong>{analysis.overall_status}</strong> ·{' '}
+            {analysis.sections.filter((s) => s.verified).length} of {analysis.sections.length} sections verified
+          </p>
+          <ul className="list">
+            {analysis.sections.map((section) => {
+              const inputs = analysisInputs[section.key] ?? { correction: '', note: '' };
+              const badge = section.verified
+                ? '✓ Verified'
+                : section.confidence === 'missing'
+                  ? 'Missing'
+                  : section.confidence === 'high'
+                    ? 'High confidence'
+                    : 'Estimated';
+              return (
+                <li key={section.key}>
+                  <strong>{section.title}</strong> — {badge}
+                  <br />
+                  {section.summary}
+                  {section.detail.length > 0 && (
+                    <ul>
+                      {section.detail.map((line, i) => (
+                        <li key={i}>{line}</li>
+                      ))}
+                    </ul>
+                  )}
+                  {section.verified ? (
+                    <>
+                      {section.correction && (
+                        <p>
+                          <small>Correction: {section.correction}</small>
+                        </p>
+                      )}
+                      {section.note && (
+                        <p>
+                          <small>Note: {section.note}</small>
+                        </p>
+                      )}
+                      <button
+                        type="button"
+                        disabled={analysisBusyKey === section.key}
+                        onClick={async () => {
+                          setAnalysisBusyKey(section.key);
+                          setAnalysisError('');
+                          try {
+                            setAnalysis(await api.unverifyAnalysisSection(props.game.id, section.key));
+                          } catch (e) {
+                            setAnalysisError(e instanceof Error ? e.message : 'Unverify failed');
+                          } finally {
+                            setAnalysisBusyKey(null);
+                          }
+                        }}
+                      >
+                        {analysisBusyKey === section.key ? 'Working…' : 'Unverify'}
+                      </button>
+                    </>
+                  ) : (
+                    <div className="row">
+                      <input
+                        placeholder="Correction (optional)"
+                        value={inputs.correction}
+                        onChange={(e) =>
+                          setAnalysisInputs((prev) => ({
+                            ...prev,
+                            [section.key]: { ...inputs, correction: e.target.value },
+                          }))
+                        }
+                      />
+                      <input
+                        placeholder="Note (optional)"
+                        value={inputs.note}
+                        onChange={(e) =>
+                          setAnalysisInputs((prev) => ({
+                            ...prev,
+                            [section.key]: { ...inputs, note: e.target.value },
+                          }))
+                        }
+                      />
+                      <button
+                        type="button"
+                        disabled={analysisBusyKey === section.key}
+                        onClick={async () => {
+                          setAnalysisBusyKey(section.key);
+                          setAnalysisError('');
+                          try {
+                            setAnalysis(
+                              await api.verifyAnalysisSection(
+                                props.game.id,
+                                section.key,
+                                inputs.correction,
+                                inputs.note,
+                              ),
+                            );
+                          } catch (e) {
+                            setAnalysisError(e instanceof Error ? e.message : 'Verify failed');
+                          } finally {
+                            setAnalysisBusyKey(null);
+                          }
+                        }}
+                      >
+                        {analysisBusyKey === section.key ? 'Working…' : 'Verify'}
+                      </button>
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </>
       )}
 
       <h3>Box score</h3>
