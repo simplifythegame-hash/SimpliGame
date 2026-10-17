@@ -284,6 +284,7 @@ export default function App() {
             Logout
           </button>
         </p>
+        <ChangePasswordForm />
       </header>
 
       {error && <p className="error">{error}</p>}
@@ -572,6 +573,87 @@ function SetupScreen({ onDone }: { onDone: (user: AuthUser) => void }) {
 
 /** Owner-only coach management: add coaches with a role + team
  *  assignments, change a coach's role/teams, remove a coach. */
+/** Self-service password change, in the header account area. */
+function ChangePasswordForm() {
+  const [open, setOpen] = useState(false);
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    setSuccess('');
+    if (next !== confirm) {
+      setError('New passwords do not match.');
+      return;
+    }
+    if (next.length < 8) {
+      setError('New password must be at least 8 characters.');
+      return;
+    }
+    try {
+      await api.changePassword(current, next);
+      setCurrent('');
+      setNext('');
+      setConfirm('');
+      setSuccess('Password changed. Your other sessions were signed out.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to change password.');
+    }
+  }
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => {
+          setOpen((o) => !o);
+          setError('');
+          setSuccess('');
+        }}
+      >
+        Change password
+      </button>
+      {open && (
+        <form onSubmit={handleSubmit}>
+          <div className="row">
+            <input
+              type="password"
+              value={current}
+              onChange={(e) => setCurrent(e.target.value)}
+              placeholder="Current password"
+              required
+              autoComplete="current-password"
+            />
+            <input
+              type="password"
+              value={next}
+              onChange={(e) => setNext(e.target.value)}
+              placeholder="New password (8+ characters)"
+              required
+              autoComplete="new-password"
+            />
+            <input
+              type="password"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              placeholder="Confirm new password"
+              required
+              autoComplete="new-password"
+            />
+            <button type="submit">Change password</button>
+          </div>
+          {error && <p className="error">{error}</p>}
+          {success && <p>{success}</p>}
+        </form>
+      )}
+    </div>
+  );
+}
+
 function CoachesScreen({ teams, onBack }: { teams: { id: string; name: string }[]; onBack: () => void }) {
   const [coaches, setCoaches] = useState<Coach[]>([]);
   const [loading, setLoading] = useState(true);
@@ -582,6 +664,8 @@ function CoachesScreen({ teams, onBack }: { teams: { id: string; name: string }[
   const [role, setRole] = useState('assistant');
   const [newTeamIds, setNewTeamIds] = useState<string[]>([]);
   const [editState, setEditState] = useState<Record<string, { role: string; teamIds: string[] }>>({});
+  const [resetState, setResetState] = useState<Record<string, { next: string; confirm: string }>>({});
+  const [resetMessage, setResetMessage] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -631,11 +715,40 @@ function CoachesScreen({ teams, onBack }: { teams: { id: string; name: string }[
   async function handleRemove(coach: Coach) {
     if (!window.confirm(`Remove ${coach.name} (${coach.email})? They will no longer be able to log in.`)) return;
     setError('');
+    setResetMessage('');
     try {
       await api.deleteCoach(coach.id);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to remove coach');
+    }
+  }
+
+  async function handleResetPassword(coach: Coach) {
+    const r = resetState[coach.id];
+    if (!r) return;
+    setError('');
+    setResetMessage('');
+    if (r.next !== r.confirm) {
+      setError('New passwords do not match.');
+      return;
+    }
+    if (r.next.length < 8) {
+      setError('New password must be at least 8 characters.');
+      return;
+    }
+    try {
+      await api.resetCoachPassword(coach.id, r.next);
+      setResetState((prev) => {
+        const nextState = { ...prev };
+        delete nextState[coach.id];
+        return nextState;
+      });
+      setResetMessage(
+        `Password reset for ${coach.name}. Share the new password with them out-of-band — they will need to log in again.`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to reset password');
     }
   }
 
@@ -649,6 +762,7 @@ function CoachesScreen({ teams, onBack }: { teams: { id: string; name: string }[
       <h2>Coaches</h2>
       <button type="button" onClick={onBack}>Back</button>
       {error && <p className="error">{error}</p>}
+      {resetMessage && <p>{resetMessage}</p>}
       <h3>Add a coach</h3>
       <p className="sub-hint">A coach sees only the teams you check. The owner sees everything.</p>
       <form onSubmit={handleAdd}>
@@ -731,7 +845,73 @@ function CoachesScreen({ teams, onBack }: { teams: { id: string; name: string }[
                   ) : (
                     <>
                       <button type="button" onClick={() => startEdit(c)}>Edit</button>{' '}
-                      <button type="button" onClick={() => void handleRemove(c)}>Remove</button>
+                      <button type="button" onClick={() => void handleRemove(c)}>Remove</button>{' '}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setResetState((prev) =>
+                            prev[c.id]
+                              ? (() => {
+                                  const nextState = { ...prev };
+                                  delete nextState[c.id];
+                                  return nextState;
+                                })()
+                              : { ...prev, [c.id]: { next: '', confirm: '' } },
+                          )
+                        }
+                      >
+                        Reset password
+                      </button>
+                      {resetState[c.id] && (
+                        <form
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            void handleResetPassword(c);
+                          }}
+                        >
+                          <div className="row">
+                            <input
+                              type="password"
+                              value={resetState[c.id].next}
+                              onChange={(e) =>
+                                setResetState((prev) => ({
+                                  ...prev,
+                                  [c.id]: { ...prev[c.id], next: e.target.value },
+                                }))
+                              }
+                              placeholder="New password (8+ characters)"
+                              required
+                              autoComplete="new-password"
+                            />
+                            <input
+                              type="password"
+                              value={resetState[c.id].confirm}
+                              onChange={(e) =>
+                                setResetState((prev) => ({
+                                  ...prev,
+                                  [c.id]: { ...prev[c.id], confirm: e.target.value },
+                                }))
+                              }
+                              placeholder="Confirm new password"
+                              required
+                              autoComplete="new-password"
+                            />
+                            <button type="submit">Set new password</button>{' '}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setResetState((prev) => {
+                                  const nextState = { ...prev };
+                                  delete nextState[c.id];
+                                  return nextState;
+                                })
+                              }
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </form>
+                      )}
                     </>
                   )}
                 </>
