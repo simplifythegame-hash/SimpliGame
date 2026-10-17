@@ -722,10 +722,13 @@ app.post(
 // unlisted token-only publish model as game watch links (002).
 //
 // Stats shape: career totals by stat type (exactly the stat types the
-// app logs — Kill, Ace, Block, Dig, Assist, Attack attempt, Serve,
-// Error, Substitution, Opponent point), plus a per-game breakdown.
-// There is no season field on games in this schema, so "season" is not
-// a separate bucket — career totals + per-game is the honest shape.
+// app logs — Kill, Ace, Block, Dig, Assist, Attack Attempt, Serve Error,
+// Passing Error, Substitution, Opponent point), plus a per-game
+// breakdown. There is no season field on games in this schema, so
+// "season" is not a separate bucket — career totals + per-game is the
+// honest shape. Points only count for our side: a Serve Error /
+// Passing Error is recorded with side 'opponent' and its point belongs
+// to the opponent, not to the player who made the error.
 async function getOrgPlayer(
   db: ReturnType<typeof getPool>,
   req: express.Request,
@@ -746,7 +749,7 @@ async function getOrgPlayer(
 // with its game's video id + timestamp so it links back to film.
 async function computePlayerStats(db: ReturnType<typeof getPool>, playerId: string) {
   const events = await db.query(
-    `SELECT e.stat_type, e.points, e.video_seconds, e.created_at,
+    `SELECT e.stat_type, e.side, e.points, e.video_seconds, e.created_at,
             g.opponent, g.youtube_video_id
      FROM game_events e JOIN games g ON g.id = e.game_id
      WHERE e.player_id = $1
@@ -769,7 +772,11 @@ async function computePlayerStats(db: ReturnType<typeof getPool>, playerId: stri
   }[] = [];
   for (const e of events.rows) {
     totals[e.stat_type] = (totals[e.stat_type] ?? 0) + 1;
-    totalPoints += e.points;
+    // Our-side points only — an opponent-side point (e.g. our Serve
+    // Error) is the opponent's point, not this player's.
+    if (e.side === 'ours') {
+      totalPoints += e.points;
+    }
     const key = `${e.opponent}|${e.created_at.slice(0, 10)}`;
     let gameEntry = byGameMap.get(key);
     if (!gameEntry) {
@@ -777,7 +784,9 @@ async function computePlayerStats(db: ReturnType<typeof getPool>, playerId: stri
       byGameMap.set(key, gameEntry);
     }
     gameEntry.stats[e.stat_type] = (gameEntry.stats[e.stat_type] ?? 0) + 1;
-    gameEntry.points += e.points;
+    if (e.side === 'ours') {
+      gameEntry.points += e.points;
+    }
     if (e.stat_type !== 'Substitution') {
       highlights.push({
         stat_type: e.stat_type,
@@ -1508,7 +1517,11 @@ app.get(
         boxByName.set(e.player_name, entry);
       }
       entry.stats[e.stat_type] = (entry.stats[e.stat_type] ?? 0) + 1;
-      entry.points += e.points;
+      // Our-side points only — an opponent-side point (e.g. our Serve
+      // Error) is the opponent's point, not this player's.
+      if (e.side === 'ours') {
+        entry.points += e.points;
+      }
     }
     res.json({
       ok: true,
@@ -2269,7 +2282,11 @@ app.post(
       }
       if (entry) {
         entry.stats[e.stat_type] = (entry.stats[e.stat_type] ?? 0) + 1;
-        entry.points += e.points;
+        // Our-side points only — an opponent-side point (e.g. our Serve
+        // Error) is the opponent's point, not this player's.
+        if (e.side === 'ours') {
+          entry.points += e.points;
+        }
       }
       timelineRows.push([
         new Date(e.created_at).toLocaleString(),
