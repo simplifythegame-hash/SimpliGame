@@ -1794,6 +1794,23 @@ function LiveGameScreen(props: {
   const [subIn, setSubIn] = useState<string | null>(null);
   // YouTube dropdown under the video: collapsed by default.
   const [youtubeOpen, setYoutubeOpen] = useState(false);
+  // Stat buttons stay up even with no player selected — tapping one
+  // with no selection shows this hint + briefly highlights the
+  // on-court cards instead of recording anything.
+  const [statHint, setStatHint] = useState(false);
+  useEffect(() => {
+    if (!statHint) return;
+    const t = setTimeout(() => setStatHint(false), 1800);
+    return () => clearTimeout(t);
+  }, [statHint]);
+
+  function handleStatClick(s: { label: string; points: number; side: 'ours' | 'opponent' }) {
+    if (!selected) {
+      setStatHint(true);
+      return;
+    }
+    props.onLogEvent(s);
+  }
 
   function exitSubMode() {
     setSubMode(false);
@@ -1927,7 +1944,7 @@ function LiveGameScreen(props: {
       )}
 
       <h3>On court — tap a player, then tap a stat</h3>
-      <div className="cards">
+      <div className={`cards ${statHint ? 'cards-need-player' : ''}`}>
         {onCourt.map((p) => (
           <button
             key={p.id}
@@ -1938,6 +1955,7 @@ function LiveGameScreen(props: {
                 setSubOut(subOut === p.id ? null : p.id);
               } else {
                 props.onSelectPlayer(p.id);
+                setStatHint(false);
               }
             }}
           >
@@ -1971,14 +1989,26 @@ function LiveGameScreen(props: {
         </p>
       )}
 
-      {!subMode && selected && (
+      {/* Stat buttons stay up whether or not a player is selected.
+          Tapping one with no selection shows a hint + highlights the
+          on-court cards instead of recording. Hidden in sub mode so
+          the sub flow stays unambiguous. */}
+      {!subMode && (
         <>
-          <p>
-            Tagging: <strong>{selected.name}</strong>
-          </p>
+          {selected ? (
+            <p>
+              Tagging: <strong>{selected.name}</strong>
+            </p>
+          ) : (
+            <p className="stat-hint" aria-live="polite">
+              {statHint
+                ? 'Select a player first — tap an on-court card, then tap a stat.'
+                : 'Tap an on-court player, then tap a stat.'}
+            </p>
+          )}
           <div className="row">
             {statButtons.map((s) => (
-              <button key={s.label} onClick={() => props.onLogEvent(s)} className="btn-icon">
+              <button key={s.label} onClick={() => handleStatClick(s)} className="btn-icon">
                 <Icon name={s.icon} />
                 {s.label}
                 {s.points > 0 && s.side === 'ours' ? ` (+${s.points})` : ''}
