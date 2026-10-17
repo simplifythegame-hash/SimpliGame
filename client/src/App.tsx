@@ -3,20 +3,47 @@ import { api } from './api';
 import type { AuthUser, Coach, EnrollInfo, FamilyContact, Game, GameAnalysis, GameEvent, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Team, Workspace } from './types';
 import YouTubePlayer from './components/YouTubePlayer';
 import VideoPlaceholder from './components/VideoPlaceholder';
+import Icon, { type IconName } from './components/Icon';
 import { downloadGameCsv } from './csv';
 import './styles.css';
 
-/** Stat buttons for the live screen. Points follow volleyball scoring:
- *  Kill / Ace / Block win the rally; everything else is tracked at 0. */
-const STAT_BUTTONS: { label: string; points: number }[] = [
-  { label: 'Kill', points: 1 },
-  { label: 'Ace', points: 1 },
-  { label: 'Block', points: 1 },
-  { label: 'Dig', points: 0 },
-  { label: 'Assist', points: 0 },
-  { label: 'Attack attempt', points: 0 },
-  { label: 'Serve', points: 0 },
-  { label: 'Error', points: 0 },
+/** One stat button on the live screen. Scoring: `points` is how many
+ *  points the rally is worth, and `side` is whose score moves. Kill /
+ *  Ace / Block win the rally for us; Serve Error / Passing Error hand
+ *  the rally (and the point) to the opponent — recorded with side
+ *  'opponent' so the live score, box scores, and analysis all credit the
+ *  point to the opponent, while the error itself stays attributed to
+ *  the player who made it. */
+type StatButtonDef = {
+  label: string;
+  points: number;
+  side: 'ours' | 'opponent';
+  icon: IconName;
+};
+
+/** The prototype's 8 volleyball stat buttons. */
+const VOLLEYBALL_STAT_BUTTONS: StatButtonDef[] = [
+  { label: 'Kill', points: 1, side: 'ours', icon: 'kill' },
+  { label: 'Ace', points: 1, side: 'ours', icon: 'ace' },
+  { label: 'Block', points: 1, side: 'ours', icon: 'block' },
+  { label: 'Assist', points: 0, side: 'ours', icon: 'assist' },
+  { label: 'Dig', points: 0, side: 'ours', icon: 'dig' },
+  { label: 'Attack Attempt', points: 0, side: 'ours', icon: 'attack' },
+  { label: 'Serve Error', points: 1, side: 'opponent', icon: 'serveError' },
+  { label: 'Passing Error', points: 1, side: 'opponent', icon: 'passError' },
+];
+
+/** The pre-existing generic set, kept for non-volleyball teams so the
+ *  app stays sport-agnostic outside volleyball. */
+const GENERIC_STAT_BUTTONS: StatButtonDef[] = [
+  { label: 'Kill', points: 1, side: 'ours', icon: 'kill' },
+  { label: 'Ace', points: 1, side: 'ours', icon: 'ace' },
+  { label: 'Block', points: 1, side: 'ours', icon: 'block' },
+  { label: 'Dig', points: 0, side: 'ours', icon: 'dig' },
+  { label: 'Assist', points: 0, side: 'ours', icon: 'assist' },
+  { label: 'Attack attempt', points: 0, side: 'ours', icon: 'attack' },
+  { label: 'Serve', points: 0, side: 'ours', icon: 'serve' },
+  { label: 'Error', points: 0, side: 'ours', icon: 'error' },
 ];
 
 /** Stat types that count as highlights (same list Reel Studio uses when
@@ -205,14 +232,14 @@ export default function App() {
     });
   }
 
-  async function handleLogEvent(stat: { label: string; points: number }) {
+  async function handleLogEvent(stat: { label: string; points: number; side: 'ours' | 'opponent' }) {
     if (!currentGame || !selectedPlayerId) return;
     setError('');
     try {
       const result = await api.logEvent(currentGame.id, {
         player_id: selectedPlayerId,
         stat_type: stat.label,
-        side: 'ours',
+        side: stat.side,
         points: stat.points,
         video_seconds: 0,
       });
@@ -366,12 +393,12 @@ export default function App() {
 
       <div className="app-layout">
       <nav className="side-nav">
-        <button className={activeTab === 'home' ? 'selected' : ''} onClick={() => setView({ kind: 'home' })}>HOME</button>
-        <button className={activeTab === 'live' ? 'selected' : ''} onClick={() => setView({ kind: 'live' })}>Live</button>
-        <button className={activeTab === 'teams' ? 'selected' : ''} onClick={() => setView({ kind: 'teams' })}>Team</button>
+        <button className={activeTab === 'home' ? 'selected' : ''} onClick={() => setView({ kind: 'home' })}><Icon name="home" size={18} />HOME</button>
+        <button className={activeTab === 'live' ? 'selected' : ''} onClick={() => setView({ kind: 'live' })}><Icon name="live" size={18} />Live</button>
+        <button className={activeTab === 'teams' ? 'selected' : ''} onClick={() => setView({ kind: 'teams' })}><Icon name="team" size={18} />Team</button>
         {canRole(me.role, 'head_coach') && (
           <button className={activeTab === 'players' ? 'selected' : ''} onClick={() => setView({ kind: 'players' })}>
-            Player Management
+            <Icon name="players" size={18} />Player Management
           </button>
         )}
         {canRole(me.role, 'head_coach') && (
@@ -379,7 +406,7 @@ export default function App() {
             className={activeTab === 'highlights' ? 'selected' : ''}
             onClick={() => setView({ kind: 'highlights' })}
           >
-            Highlight Builder
+            <Icon name="highlights" size={18} />Highlight Builder
           </button>
         )}
         {canRole(me.role, 'head_coach') && (
@@ -394,7 +421,7 @@ export default function App() {
               })
             }
           >
-            Reel Studio
+            <Icon name="studio" size={18} />Reel Studio
           </button>
         )}
         {canRole(me.role, 'head_coach') && (
@@ -402,12 +429,12 @@ export default function App() {
             className={activeTab === 'exports' ? 'selected' : ''}
             onClick={() => setView({ kind: 'exports' })}
           >
-            Export Center
+            <Icon name="exports" size={18} />Export Center
           </button>
         )}
         {me.role === 'owner' && (
           <button className={activeTab === 'coaches' ? 'selected' : ''} onClick={() => setView({ kind: 'coaches' })}>
-            Coaches
+            <Icon name="coaches" size={18} />Coaches
           </button>
         )}
       </nav>
@@ -449,6 +476,7 @@ export default function App() {
           role={me.role}
           game={currentGame}
           teamName={workspace.teams.find((t) => t.id === currentGame.team_id)?.name ?? 'Team'}
+          teamSport={workspace.teams.find((t) => t.id === currentGame.team_id)?.sport ?? 'Volleyball'}
           players={workspace.players.filter((p) => p.team_id === currentGame.team_id)}
           lineupPlayerIds={workspace.lineups.filter((l) => l.game_id === currentGame.id).map((l) => l.player_id)}
           events={workspace.events.filter((e) => e.game_id === currentGame.id)}
@@ -980,7 +1008,7 @@ function HighlightBuilderScreen(props: {
   return (
     <>
       <section>
-        <h2>Highlight Builder</h2>
+        <h2 className="btn-icon"><Icon name="highlights" size={22} />Highlight Builder</h2>
         <p>
           Automated builds, the reel library, and manual building in Reel Studio — all
           highlights live here.
@@ -1011,7 +1039,7 @@ function AutoReelSection(props: {
   const [error, setError] = useState('');
   return (
     <section>
-      <h2>Auto Reel — automated builds</h2>
+      <h2 className="btn-icon"><Icon name="buildReel" size={22} />Auto Reel — automated builds</h2>
       <p>
         One tap builds a draft reel from a game&apos;s highlights (best plays first) and opens
         it in Reel Studio for tweaking.
@@ -1035,6 +1063,7 @@ function AutoReelSection(props: {
         </select>
         <button
           disabled={busy || !gameId}
+          className="btn-icon"
           onClick={async () => {
             setBusy(true);
             setError('');
@@ -1048,7 +1077,7 @@ function AutoReelSection(props: {
             }
           }}
         >
-          {busy ? 'Building…' : 'Build Auto Reel'}
+          <Icon name="buildReel" />{busy ? 'Building…' : 'Build Auto Reel'}
         </button>
       </div>
       {error && <p className="error">{error}</p>}
@@ -1128,7 +1157,7 @@ function EventsByPlayerSection(props: {
 
   return (
     <section>
-      <h2>Events by player</h2>
+      <h2 className="btn-icon"><Icon name="players" size={22} />Events by player</h2>
       <p>
         A game&apos;s recorded events, grouped by the player they belong to. Build a reel
         from one player&apos;s highlights — it opens in Reel Studio for tweaking.
@@ -1165,7 +1194,8 @@ function EventsByPlayerSection(props: {
                   {events.map((e) => (
                     <li key={e.id}>
                       {e.stat_type}
-                      {e.points > 0 ? ` (+${e.points})` : ''} · at{' '}
+                      {e.points > 0 && e.side === 'ours' ? ` (+${e.points})` : ''}
+                      {e.points > 0 && e.side === 'opponent' ? ' (opp +1)' : ''} · at{' '}
                       {formatTimestamp(e.video_seconds)}
                     </li>
                   ))}
@@ -1173,8 +1203,10 @@ function EventsByPlayerSection(props: {
                 <div className="row">
                   <button
                     disabled={busyPlayerId === playerId || highlightCount === 0}
+                    className="btn-icon"
                     onClick={() => player && buildReelForPlayer(player, events)}
                   >
+                    <Icon name="buildReel" />
                     {busyPlayerId === playerId
                       ? 'Building…'
                       : highlightCount === 0
@@ -1192,7 +1224,8 @@ function EventsByPlayerSection(props: {
                 {groups.other.map((e) => (
                   <li key={e.id}>
                     {e.stat_type}
-                    {e.points > 0 ? ` (+${e.points})` : ''} · at{' '}
+                    {e.points > 0 && e.side === 'ours' ? ` (+${e.points})` : ''}
+                    {e.points > 0 && e.side === 'opponent' ? ' (opp +1)' : ''} · at{' '}
                     {formatTimestamp(e.video_seconds)}
                   </li>
                 ))}
@@ -1726,6 +1759,7 @@ function LiveGameScreen(props: {
   role: ClientRole;
   game: Game;
   teamName: string;
+  teamSport: string;
   players: Player[];
   lineupPlayerIds: string[];
   events: { player_id: string | null; stat_type: string; points: number; side: string }[];
@@ -1734,7 +1768,7 @@ function LiveGameScreen(props: {
   onSaveYouTube: () => void;
   selectedPlayerId: string | null;
   onSelectPlayer: (id: string) => void;
-  onLogEvent: (stat: { label: string; points: number }) => void;
+  onLogEvent: (stat: { label: string; points: number; side: 'ours' | 'opponent' }) => void;
   onOpponentScores: () => void;
   onUndo: () => void;
   onSub: (outPlayerId: string, inPlayerId: string) => Promise<void>;
@@ -1777,7 +1811,10 @@ function LiveGameScreen(props: {
   const subInPlayer = props.players.find((p) => p.id === subIn);
 
   // Box score: per-player counts by stat type, plus points — same
-  // computation as Game Detail, so both screens always agree.
+  // computation as Game Detail, so both screens always agree. Points
+  // only count for our side: a Serve Error / Passing Error is recorded
+  // with side 'opponent' and its point belongs to the opponent, not
+  // to the player who made the error.
   const boxScore = useMemo(() => {
     const byPlayer = new Map<string, { name: string; stats: Record<string, number>; points: number }>();
     for (const e of props.events) {
@@ -1785,11 +1822,16 @@ function LiveGameScreen(props: {
       const player = props.players.find((p) => p.id === e.player_id);
       const entry = byPlayer.get(e.player_id) ?? { name: player?.name ?? 'Unknown', stats: {}, points: 0 };
       entry.stats[e.stat_type] = (entry.stats[e.stat_type] ?? 0) + 1;
-      entry.points += e.points;
+      if (e.side === 'ours') entry.points += e.points;
       byPlayer.set(e.player_id, entry);
     }
     return [...byPlayer.values()];
   }, [props.events, props.players]);
+
+  // Stat set follows the TEAM's sport: the prototype's 8 volleyball
+  // buttons for volleyball teams, the generic set for every other sport.
+  const statButtons =
+    props.teamSport.toLowerCase() === 'volleyball' ? VOLLEYBALL_STAT_BUTTONS : GENERIC_STAT_BUTTONS;
 
   // Role gates (server enforces; the client only hides what the role
   // may not do): stat crew tags stats + undo only — no subs, no Go Live
@@ -1798,8 +1840,8 @@ function LiveGameScreen(props: {
 
   return (
     <section>
-      <button onClick={props.onBack}>← All games</button>{' '}
-      <button onClick={props.onDetail}>Game detail</button>
+      <button onClick={props.onBack} className="btn-icon"><Icon name="back" />All games</button>{' '}
+      <button onClick={props.onDetail} className="btn-icon"><Icon name="eye" />Game detail</button>
 
       {/* 1. Matchup header ABOVE the video: teams + live score + status. */}
       <div className="live-matchup">
@@ -1822,10 +1864,10 @@ function LiveGameScreen(props: {
         </div>
         <div className="row">
           {canAssistant && props.game.status === 'draft' && (
-            <button onClick={() => props.onSetStatus('live')}>Go Live</button>
+            <button onClick={() => props.onSetStatus('live')} className="btn-icon"><Icon name="goLive" />Go Live</button>
           )}
           {canAssistant && props.game.status === 'live' && (
-            <button onClick={() => props.onSetStatus('final')}>End Game</button>
+            <button onClick={() => props.onSetStatus('final')} className="btn-icon"><Icon name="endGame" />End Game</button>
           )}
           {props.game.status === 'final' && <span>Final — this game is closed.</span>}
         </div>
@@ -1858,11 +1900,11 @@ function LiveGameScreen(props: {
         <div className="youtube-dropdown">
           <button
             type="button"
-            className="youtube-dropdown-toggle"
+            className="youtube-dropdown-toggle btn-icon"
             aria-expanded={youtubeOpen}
             onClick={() => setYoutubeOpen((o) => !o)}
           >
-            Add YouTube link {youtubeOpen ? '▴' : '▾'}
+            <Icon name="video" />Add YouTube link {youtubeOpen ? '▴' : '▾'}
           </button>
           {youtubeOpen && (
             <form
@@ -1878,7 +1920,7 @@ function LiveGameScreen(props: {
                 placeholder="Paste YouTube link or video ID"
                 className="wide"
               />
-              <button type="submit">Save video</button>
+              <button type="submit" className="btn-icon"><Icon name="check" />Save video</button>
             </form>
           )}
         </div>
@@ -1912,14 +1954,14 @@ function LiveGameScreen(props: {
       <div className="row">
         {canAssistant &&
           (!subMode ? (
-            <button onClick={() => setSubMode(true)}>Sub</button>
+            <button onClick={() => setSubMode(true)} className="btn-icon"><Icon name="sub" />Sub</button>
           ) : (
             <>
               <span className="sub-hint">Tap the player going out, then the bench player coming in.</span>
-              <button disabled={!subOut || !subIn} onClick={confirmSub}>
-                Confirm sub
+              <button disabled={!subOut || !subIn} onClick={confirmSub} className="btn-icon">
+                <Icon name="check" />Confirm sub
               </button>
-              <button onClick={exitSubMode}>Cancel</button>
+              <button onClick={exitSubMode} className="btn-icon"><Icon name="x" />Cancel</button>
             </>
           ))}
       </div>
@@ -1935,18 +1977,20 @@ function LiveGameScreen(props: {
             Tagging: <strong>{selected.name}</strong>
           </p>
           <div className="row">
-            {STAT_BUTTONS.map((s) => (
-              <button key={s.label} onClick={() => props.onLogEvent(s)}>
+            {statButtons.map((s) => (
+              <button key={s.label} onClick={() => props.onLogEvent(s)} className="btn-icon">
+                <Icon name={s.icon} />
                 {s.label}
-                {s.points > 0 ? ` (+${s.points})` : ''}
+                {s.points > 0 && s.side === 'ours' ? ` (+${s.points})` : ''}
+                {s.points > 0 && s.side === 'opponent' ? ' (opp +1)' : ''}
               </button>
             ))}
           </div>
         </>
       )}
       <div className="row">
-        <button onClick={props.onOpponentScores}>Opponent scores (+1)</button>
-        <button onClick={props.onUndo}>Undo last event</button>
+        <button onClick={props.onOpponentScores} className="btn-icon"><Icon name="plus" />Opponent scores (+1)</button>
+        <button onClick={props.onUndo} className="btn-icon"><Icon name="undo" />Undo last event</button>
       </div>
 
       <h3>Bench</h3>
@@ -2078,7 +2122,10 @@ function GameDetailScreen(props: {
       const player = props.players.find((p) => p.id === e.player_id);
       const entry = byPlayer.get(e.player_id) ?? { name: player?.name ?? 'Unknown', stats: {}, points: 0 };
       entry.stats[e.stat_type] = (entry.stats[e.stat_type] ?? 0) + 1;
-      entry.points += e.points;
+      // Points only count for our side: a Serve Error / Passing Error is
+      // recorded with side 'opponent' and its point belongs to the
+      // opponent, not to the player who made the error.
+      if (e.side === 'ours') entry.points += e.points;
       byPlayer.set(e.player_id, entry);
     }
     return [...byPlayer.values()];
@@ -2093,8 +2140,8 @@ function GameDetailScreen(props: {
 
   return (
     <section>
-      <button onClick={props.onBack}>← All games</button>{' '}
-      <button onClick={props.onLive}>Live screen</button>
+      <button onClick={props.onBack} className="btn-icon"><Icon name="back" />All games</button>{' '}
+      <button onClick={props.onLive} className="btn-icon"><Icon name="live" />Live screen</button>
       <h2>
         Game detail — vs {props.game.opponent || 'TBD'} · Final {props.game.our_score}:{props.game.opponent_score}
       </h2>
@@ -2103,10 +2150,10 @@ function GameDetailScreen(props: {
       </p>
       <div className="row">
         {canRole(props.role, 'assistant') && props.game.status === 'draft' && (
-          <button onClick={() => props.onSetStatus('live')}>Go Live</button>
+          <button onClick={() => props.onSetStatus('live')} className="btn-icon"><Icon name="goLive" />Go Live</button>
         )}
         {canRole(props.role, 'assistant') && props.game.status === 'live' && (
-          <button onClick={() => props.onSetStatus('final')}>End Game</button>
+          <button onClick={() => props.onSetStatus('final')} className="btn-icon"><Icon name="endGame" />End Game</button>
         )}
         {props.game.status === 'final' && <span>Final — this game is closed.</span>}
       </div>
@@ -2136,7 +2183,7 @@ function GameDetailScreen(props: {
             placeholder="Paste YouTube link or video ID"
             className="wide"
           />
-          <button type="submit">Save video</button>
+          <button type="submit" className="btn-icon"><Icon name="check" />Save video</button>
         </form>
       )}
       {props.game.youtube_video_id ? (
@@ -2162,6 +2209,7 @@ function GameDetailScreen(props: {
             />
             <button
               type="button"
+              className="btn-icon"
               onClick={async () => {
                 try {
                   await navigator.clipboard.writeText(
@@ -2175,13 +2223,13 @@ function GameDetailScreen(props: {
                 }
               }}
             >
-              {copied ? 'Copied!' : 'Copy link'}
+              <Icon name="copy" />{copied ? 'Copied!' : 'Copy link'}
             </button>
           </div>
           {canRole(props.role, 'head_coach') && (
             <div className="row">
-              <button onClick={props.onUnpublish}>Unpublish</button>
-              <button onClick={props.onRevoke}>Regenerate link</button>
+              <button onClick={props.onUnpublish} className="btn-icon"><Icon name="eyeOff" />Unpublish</button>
+              <button onClick={props.onRevoke} className="btn-icon"><Icon name="refresh" />Regenerate link</button>
             </div>
           )}
           <p>
@@ -2192,7 +2240,7 @@ function GameDetailScreen(props: {
         <>
           <p>Not published — the watch link only works after you publish this game.</p>
           {canRole(props.role, 'head_coach') && (
-            <button onClick={props.onPublish}>Publish watch link</button>
+            <button onClick={props.onPublish} className="btn-icon"><Icon name="eye" />Publish watch link</button>
           )}
         </>
       )}
@@ -2210,6 +2258,7 @@ function GameDetailScreen(props: {
         {canRole(props.role, 'head_coach') && (
           <button
             disabled={!props.game.published || smsBusy}
+            className="btn-icon"
             onClick={async () => {
               setSmsBusy(true);
               setSmsResult('');
@@ -2227,7 +2276,7 @@ function GameDetailScreen(props: {
               }
             }}
           >
-            {smsBusy ? 'Sending…' : 'Notify families (highlights ready)'}
+            <Icon name="send" />{smsBusy ? 'Sending…' : 'Notify families (highlights ready)'}
           </button>
         )}
       </div>
@@ -2292,6 +2341,7 @@ function GameDetailScreen(props: {
           <div className="row">
             <button
               disabled={sheetBusy}
+              className="btn-icon"
               onClick={async () => {
                 setSheetBusy(true);
                 setSheetResult('');
@@ -2322,10 +2372,10 @@ function GameDetailScreen(props: {
                 }
               }}
             >
-              {sheetBusy ? 'Exporting…' : 'Export to Google Sheets'}
+              <Icon name="export" />{sheetBusy ? 'Exporting…' : 'Export to Google Sheets'}
             </button>
-            <button type="button" onClick={downloadCsv}>
-              Download CSV
+            <button type="button" onClick={downloadCsv} className="btn-icon">
+              <Icon name="download" />Download CSV
             </button>
           </div>
           {sheetResult && <p>{sheetResult}</p>}
@@ -2777,6 +2827,7 @@ function PlayerProfileScreen(props: { role: ClientRole; player: Player | undefin
             />
             <button
               type="button"
+              className="btn-icon"
               onClick={async () => {
                 try {
                   await navigator.clipboard.writeText(
@@ -2790,17 +2841,18 @@ function PlayerProfileScreen(props: { role: ClientRole; player: Player | undefin
                 }
               }}
             >
-              {enrollCopied ? 'Copied!' : 'Copy link'}
+              <Icon name="copy" />{enrollCopied ? 'Copied!' : 'Copy link'}
             </button>
           </div>
           <div className="row">
             {canRole(props.role, 'head_coach') && (
               <button
+                className="btn-icon"
                 onClick={() => run(async () => {
                   await api.generateEnrollToken(player.id);
                 })}
               >
-                Regenerate link
+                <Icon name="refresh" />Regenerate link
               </button>
             )}
           </div>
@@ -2813,11 +2865,12 @@ function PlayerProfileScreen(props: { role: ClientRole; player: Player | undefin
           <p>No enrollment link yet.</p>
           {canRole(props.role, 'head_coach') && (
             <button
+              className="btn-icon"
               onClick={() => run(async () => {
                 await api.generateEnrollToken(player.id);
               })}
             >
-              Create enrollment link
+              <Icon name="plus" />Create enrollment link
             </button>
           )}
         </>
@@ -2858,6 +2911,7 @@ function PlayerProfileScreen(props: { role: ClientRole; player: Player | undefin
             />
             <button
               type="button"
+              className="btn-icon"
               onClick={async () => {
                 try {
                   await navigator.clipboard.writeText(
@@ -2871,14 +2925,14 @@ function PlayerProfileScreen(props: { role: ClientRole; player: Player | undefin
                 }
               }}
             >
-              {copied ? 'Copied!' : 'Copy link'}
+              <Icon name="copy" />{copied ? 'Copied!' : 'Copy link'}
             </button>
           </div>
           <div className="row">
             {canRole(props.role, 'head_coach') && (
               <>
-                <button onClick={() => run(() => api.unpublishProfile(player.id))}>Unpublish</button>
-                <button onClick={() => run(() => api.revokeProfileLink(player.id))}>Regenerate link</button>
+                <button onClick={() => run(() => api.unpublishProfile(player.id))} className="btn-icon"><Icon name="eyeOff" />Unpublish</button>
+                <button onClick={() => run(() => api.revokeProfileLink(player.id))} className="btn-icon"><Icon name="refresh" />Regenerate link</button>
               </>
             )}
           </div>
@@ -2890,7 +2944,7 @@ function PlayerProfileScreen(props: { role: ClientRole; player: Player | undefin
         <>
           <p>Not published — the profile link only works after you publish it.</p>
           {canRole(props.role, 'head_coach') && (
-            <button onClick={() => run(() => api.publishProfile(player.id))}>Publish profile link</button>
+            <button onClick={() => run(() => api.publishProfile(player.id))} className="btn-icon"><Icon name="eye" />Publish profile link</button>
           )}
         </>
       )}
@@ -3309,7 +3363,7 @@ function ExportCenterScreen(props: { workspace: Workspace }) {
   return (
     <>
       <section>
-        <h2>Export Center</h2>
+        <h2 className="btn-icon"><Icon name="exports" size={22} />Export Center</h2>
         <p>
           Every game in one place — export any game to Google Sheets or download its CSV.
           Sheets exports are recorded below so you can reopen them anytime.
@@ -3333,12 +3387,14 @@ function ExportCenterScreen(props: { workspace: Workspace }) {
                     <button
                       type="button"
                       disabled={busyGameId === g.id}
+                      className="btn-icon"
                       onClick={() => handleExportSheets(g.id)}
                     >
-                      {busyGameId === g.id ? 'Exporting…' : 'Export to Google Sheets'}
+                      <Icon name="export" />{busyGameId === g.id ? 'Exporting…' : 'Export to Google Sheets'}
                     </button>
                     <button
                       type="button"
+                      className="btn-icon"
                       onClick={() =>
                         downloadGameCsv(
                           g,
@@ -3347,7 +3403,7 @@ function ExportCenterScreen(props: { workspace: Workspace }) {
                         )
                       }
                     >
-                      Download CSV
+                      <Icon name="download" />Download CSV
                     </button>
                   </div>
                   {result?.sheetUrl && (
@@ -3592,7 +3648,7 @@ function ReelStudioScreen(props: { role: ClientRole; reelId: string; workspace: 
 
   return (
     <section>
-      <button onClick={props.onBack}>← Highlight Builder</button>
+      <button onClick={props.onBack} className="btn-icon"><Icon name="back" />Highlight Builder</button>
       <h2>Reel Studio — {reel.name}</h2>
       <p>
         <small>
