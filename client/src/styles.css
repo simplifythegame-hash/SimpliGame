@@ -147,28 +147,47 @@ h3 {
   opacity: 0.9;
 }
 
-/* ---- Tab bar (the <nav class="row">) ---- */
+/* ---- App layout: side-tab sidebar + main content ---- */
 
-nav.row {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  box-shadow: var(--shadow);
-  padding: 0.35rem;
-  margin: 0 0 1rem;
-  gap: 0.25rem;
+.app-layout {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
 }
 
-nav.row button {
+.app-main {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Side tabs (the <nav class="side-nav">): vertical, full-width buttons
+ * with the same pill/tab treatment as the old top tab bar. */
+.side-nav {
+  flex: 0 0 180px;
+  position: sticky;
+  top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 0.35rem;
+}
+
+.side-nav button {
   border: 0;
   background: transparent;
   border-radius: 999px;
   padding: 0.55rem 1.1rem;
   font-weight: 600;
   color: var(--muted);
+  text-align: left;
+  width: 100%;
 }
 
-nav.row button.selected {
+.side-nav button.selected {
   background: var(--brand, #04bef1);
   color: #fff;
   border-color: transparent;
@@ -417,6 +436,27 @@ input.wide {
   border: 1px solid #e6c200;
   padding: 1rem;
   border-radius: var(--radius-sm);
+}
+
+@media (max-width: 720px) {
+  /* Narrow screens: the sidebar collapses back to a horizontal tab
+   * row on top of the content. */
+  .app-layout {
+    flex-direction: column;
+  }
+
+  .side-nav {
+    flex: none;
+    width: 100%;
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .side-nav button {
+    flex: 1 1 auto;
+    text-align: center;
+  }
 }
 
 @media (max-width: 560px) {
