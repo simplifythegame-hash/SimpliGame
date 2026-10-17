@@ -19,7 +19,7 @@ interface Props {
 export default function VideoPlaceholder({ title, subtitle, status }: Props) {
   return (
     <div className="video-placeholder" role="img" aria-label={`${title} — ${status}`}>
-      <img className="video-placeholder-mark" src="/icon.svg" alt="" aria-hidden="true" />
+      <img className="video-placeholder-mark" src="/icon.svg?v=2" alt="" aria-hidden="true" />
       <div className="video-placeholder-title">{title}</div>
       {subtitle && <div className="video-placeholder-subtitle">{subtitle}</div>}
       <div className="video-placeholder-status">{status}</div>
