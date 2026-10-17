@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from './api';
-import type { AuthUser, Coach, EnrollInfo, FamilyContact, Game, GameAnalysis, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Workspace } from './types';
+import type { AuthUser, Coach, EnrollInfo, FamilyContact, Game, GameAnalysis, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Team, Workspace } from './types';
 import YouTubePlayer from './components/YouTubePlayer';
 import './styles.css';
 
@@ -17,7 +17,17 @@ const STAT_BUTTONS: { label: string; points: number }[] = [
   { label: 'Error', points: 0 },
 ];
 
-type View = { kind: 'home' } | { kind: 'live'; gameId: string } | { kind: 'detail'; gameId: string } | { kind: 'profile'; playerId: string } | { kind: 'reels' } | { kind: 'reel'; reelId: string } | { kind: 'coaches' };
+type View =
+  | { kind: 'home' }
+  | { kind: 'live' }
+  | { kind: 'liveGame'; gameId: string; returnTo: 'live' | 'teams' }
+  | { kind: 'detail'; gameId: string; returnTo: 'live' | 'teams' }
+  | { kind: 'teams' }
+  | { kind: 'players' }
+  | { kind: 'profile'; playerId: string; from: 'teams' | 'players' }
+  | { kind: 'highlights' }
+  | { kind: 'reel'; reelId: string }
+  | { kind: 'coaches' };
 
 /**
  * Client-side role gating mirrors the server's permission matrix
@@ -144,7 +154,7 @@ export default function App() {
     [workspace, selectedTeamId],
   );
   const currentGame =
-    view.kind === 'live' || view.kind === 'detail'
+    view.kind === 'liveGame' || view.kind === 'detail'
       ? workspace?.games.find((g) => g.id === view.gameId)
       : undefined;
 
@@ -184,7 +194,7 @@ export default function App() {
     await run(async () => {
       const game = await api.createGame(selectedTeamId, opponent, 'Volleyball', mode);
       setOpponent('');
-      setView({ kind: 'live', gameId: game.id });
+      setView({ kind: 'liveGame', gameId: game.id, returnTo: 'live' });
     });
   }
 
@@ -237,6 +247,26 @@ export default function App() {
   if (!workspace) return <div className="page"><p className="error">{error || 'Could not load workspace.'}</p></div>;
 
   const org = workspace.organization;
+
+  // Sidebar active tab: detail / live-tagging screens belong to the tab
+  // they were opened from (Live or Team); a profile belongs to the tab
+  // it was opened from (Team or Player Management).
+  const activeTab =
+    view.kind === 'home'
+      ? 'home'
+      : view.kind === 'live' || view.kind === 'liveGame'
+        ? 'live'
+        : view.kind === 'detail'
+          ? view.returnTo
+          : view.kind === 'teams'
+            ? 'teams'
+            : view.kind === 'players'
+              ? 'players'
+              : view.kind === 'profile'
+                ? view.from
+                : view.kind === 'highlights' || view.kind === 'reel'
+                  ? 'highlights'
+                  : 'coaches';
 
   async function handleLogout() {
     try {
@@ -325,17 +355,24 @@ export default function App() {
 
       <div className="app-layout">
       <nav className="side-nav">
-        <button className={view.kind === 'home' ? 'selected' : ''} onClick={() => setView({ kind: 'home' })}>Teams &amp; Games</button>
+        <button className={activeTab === 'home' ? 'selected' : ''} onClick={() => setView({ kind: 'home' })}>HOME</button>
+        <button className={activeTab === 'live' ? 'selected' : ''} onClick={() => setView({ kind: 'live' })}>Live</button>
+        <button className={activeTab === 'teams' ? 'selected' : ''} onClick={() => setView({ kind: 'teams' })}>Team</button>
+        {canRole(me.role, 'head_coach') && (
+          <button className={activeTab === 'players' ? 'selected' : ''} onClick={() => setView({ kind: 'players' })}>
+            Player Management
+          </button>
+        )}
         {canRole(me.role, 'head_coach') && (
           <button
-            className={view.kind === 'reels' || view.kind === 'reel' ? 'selected' : ''}
-            onClick={() => setView({ kind: 'reels' })}
+            className={activeTab === 'highlights' ? 'selected' : ''}
+            onClick={() => setView({ kind: 'highlights' })}
           >
-            Reels
+            Highlight Builder
           </button>
         )}
         {me.role === 'owner' && (
-          <button className={view.kind === 'coaches' ? 'selected' : ''} onClick={() => setView({ kind: 'coaches' })}>
+          <button className={activeTab === 'coaches' ? 'selected' : ''} onClick={() => setView({ kind: 'coaches' })}>
             Coaches
           </button>
         )}
@@ -343,80 +380,37 @@ export default function App() {
 
       <main className="app-main">
       {view.kind === 'home' && (
-        <>
-          <section>
-            <h2>Teams</h2>
-            {me.role === 'owner' && (
-              <form onSubmit={handleCreateTeam} className="row">
-                <input value={teamName} onChange={(e) => setTeamName(e.target.value)} placeholder="New team name" required />
-                <button type="submit">Create team</button>
-              </form>
-            )}
-            <ul className="list">
-              {workspace.teams.map((t) => (
-                <li key={t.id}>
-                  <button className={t.id === selectedTeamId ? 'selected' : ''} onClick={() => setSelectedTeamId(t.id)}>
-                    {t.name} ({t.sport})
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </section>
-
-          {selectedTeam && (
-            <section>
-              <h2>Roster — {selectedTeam.name}</h2>
-              {canRole(me.role, 'head_coach') && (
-                <form onSubmit={handleAddPlayer} className="row">
-                  <input value={playerName} onChange={(e) => setPlayerName(e.target.value)} placeholder="Player name" required />
-                  <input value={playerJersey} onChange={(e) => setPlayerJersey(e.target.value)} placeholder="#" />
-                  <input value={playerPosition} onChange={(e) => setPlayerPosition(e.target.value)} placeholder="Position" />
-                  <button type="submit">Add player</button>
-                </form>
-              )}
-              <ul className="list">
-                {roster.map((p) => (
-                  <li key={p.id}>
-                    #{p.jersey_number} {p.name} — {p.position}{' '}
-                    <button onClick={() => setView({ kind: 'profile', playerId: p.id })}>Profile</button>
-                  </li>
-                ))}
-              </ul>
-
-              <h3>New game</h3>
-              {canRole(me.role, 'head_coach') && (
-                <form onSubmit={handleCreateGame} className="row">
-                  <input value={opponent} onChange={(e) => setOpponent(e.target.value)} placeholder="Opponent" />
-                  <select value={mode} onChange={(e) => setMode(e.target.value as 'live' | 'film')}>
-                    <option value="live">Live game</option>
-                    <option value="film">Film review</option>
-                  </select>
-                  <button type="submit">Create game</button>
-                </form>
-              )}
-            </section>
-          )}
-
-          <section>
-            <h2>Games</h2>
-            <ul className="list">
-              {workspace.games.map((g) => {
-                const team = workspace.teams.find((t) => t.id === g.team_id);
-                return (
-                  <li key={g.id}>
-                    {team?.name ?? 'Team'} vs {g.opponent || 'TBD'} — {g.our_score}:{g.opponent_score} ({g.mode} · {g.status})
-                    {' '}
-                    <button onClick={() => setView({ kind: 'live', gameId: g.id })}>Live</button>{' '}
-                    <button onClick={() => setView({ kind: 'detail', gameId: g.id })}>Detail</button>
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
-        </>
+        <HomeOverviewScreen
+          workspace={workspace}
+          role={me.role}
+          onOpenGame={(gameId, returnTo) => setView({ kind: 'detail', gameId, returnTo })}
+          onOpenLiveGame={(gameId, returnTo) => setView({ kind: 'liveGame', gameId, returnTo })}
+          onGoTab={(tab) => setView(tab)}
+          onSelectTeam={(teamId) => {
+            setSelectedTeamId(teamId);
+            setView({ kind: 'teams' });
+          }}
+        />
       )}
 
-      {view.kind === 'live' && currentGame && (
+      {view.kind === 'live' && (
+        <LiveTabScreen
+          role={me.role}
+          teams={workspace.teams}
+          games={workspace.games}
+          selectedTeamId={selectedTeamId}
+          onSelectTeam={setSelectedTeamId}
+          opponent={opponent}
+          onOpponentChange={setOpponent}
+          mode={mode}
+          onModeChange={setMode}
+          onCreateGame={handleCreateGame}
+          onOpenLiveGame={(gameId) => setView({ kind: 'liveGame', gameId, returnTo: 'live' })}
+          onOpenDetail={(gameId) => setView({ kind: 'detail', gameId, returnTo: 'live' })}
+        />
+      )}
+
+      {view.kind === 'liveGame' && currentGame && (
         <LiveGameScreen
           role={me.role}
           game={currentGame}
@@ -437,8 +431,8 @@ export default function App() {
             // selection so stats can't be tagged to a benched player.
             setSelectedPlayerId(null);
           }}
-          onBack={() => setView({ kind: 'home' })}
-          onDetail={() => setView({ kind: 'detail', gameId: currentGame.id })}
+          onBack={() => setView({ kind: view.returnTo })}
+          onDetail={() => setView({ kind: 'detail', gameId: currentGame.id, returnTo: view.returnTo })}
         />
       )}
 
@@ -476,13 +470,53 @@ export default function App() {
             setView({ kind: 'reel', reelId: reel.id });
           }}
           onSetStatus={async (status) => run(() => api.setGameStatus(currentGame.id, status))}
-          onBack={() => setView({ kind: 'home' })}
-          onLive={() => setView({ kind: 'live', gameId: currentGame.id })}
+          onBack={() => setView({ kind: view.returnTo })}
+          onLive={() => setView({ kind: 'liveGame', gameId: currentGame.id, returnTo: view.returnTo })}
         />
       )}
 
-      {view.kind === 'reels' && (
-        <ReelsListScreen
+      {view.kind === 'teams' && (
+        <TeamsTabScreen
+          role={me.role}
+          teams={workspace.teams}
+          players={workspace.players}
+          games={workspace.games}
+          selectedTeamId={selectedTeamId}
+          onSelectTeam={setSelectedTeamId}
+          teamName={teamName}
+          onTeamNameChange={setTeamName}
+          onCreateTeam={handleCreateTeam}
+          playerName={playerName}
+          onPlayerNameChange={setPlayerName}
+          playerJersey={playerJersey}
+          onPlayerJerseyChange={setPlayerJersey}
+          playerPosition={playerPosition}
+          onPlayerPositionChange={setPlayerPosition}
+          onAddPlayer={handleAddPlayer}
+          onOpenProfile={(playerId) => setView({ kind: 'profile', playerId, from: 'teams' })}
+          onOpenLiveGame={(gameId) => setView({ kind: 'liveGame', gameId, returnTo: 'teams' })}
+          onOpenDetail={(gameId) => setView({ kind: 'detail', gameId, returnTo: 'teams' })}
+        />
+      )}
+
+      {view.kind === 'players' && (
+        <PlayersTabScreen
+          players={workspace.players}
+          teams={workspace.teams}
+          onOpenProfile={(playerId) => setView({ kind: 'profile', playerId, from: 'players' })}
+        />
+      )}
+
+      {view.kind === 'profile' && (
+        <PlayerProfileScreen
+          role={me.role}
+          player={workspace.players.find((p) => p.id === view.playerId)}
+          onBack={() => setView({ kind: view.from })}
+        />
+      )}
+
+      {view.kind === 'highlights' && (
+        <HighlightBuilderScreen
           role={me.role}
           games={workspace.games}
           teams={workspace.teams}
@@ -495,15 +529,7 @@ export default function App() {
           role={me.role}
           reelId={view.reelId}
           workspace={workspace}
-          onBack={() => setView({ kind: 'reels' })}
-        />
-      )}
-
-      {view.kind === 'profile' && (
-        <PlayerProfileScreen
-          role={me.role}
-          player={workspace.players.find((p) => p.id === view.playerId)}
-          onBack={() => setView({ kind: 'home' })}
+          onBack={() => setView({ kind: 'highlights' })}
         />
       )}
 
@@ -513,6 +539,456 @@ export default function App() {
       </main>
       </div>
     </div>
+  );
+}
+
+
+/** One game row, shared by HOME / Live / Team: score, status, and entry
+ *  into live tagging (Live) or the detail screen (Detail). */
+function GameListItem(props: {
+  game: Game;
+  teamName: string;
+  onLive: () => void;
+  onDetail: () => void;
+}) {
+  return (
+    <li>
+      {props.teamName} vs {props.game.opponent || 'TBD'} — {props.game.our_score}:{props.game.opponent_score}{' '}
+      ({props.game.mode} · {props.game.status}){' '}
+      <button onClick={props.onLive}>Live</button>{' '}
+      <button onClick={props.onDetail}>Detail</button>
+    </li>
+  );
+}
+
+/** HOME (prototype "Overview"): org summary, live / upcoming / recent
+ *  games, teams, and quick links into the other tabs. Every number comes
+ *  from the loaded workspace — nothing is invented. */
+function HomeOverviewScreen(props: {
+  workspace: Workspace;
+  role: ClientRole;
+  onOpenGame: (gameId: string, returnTo: 'live' | 'teams') => void;
+  onOpenLiveGame: (gameId: string, returnTo: 'live' | 'teams') => void;
+  onGoTab: (view: View) => void;
+  onSelectTeam: (teamId: string) => void;
+}) {
+  const { workspace } = props;
+  const teamName = (teamId: string) => workspace.teams.find((t) => t.id === teamId)?.name ?? 'Team';
+  const liveGames = workspace.games.filter((g) => g.status === 'live');
+  const upcomingGames = workspace.games.filter((g) => g.status === 'draft');
+  // Games arrive in creation order; most recent finals first.
+  const recentFinals = workspace.games
+    .filter((g) => g.status === 'final')
+    .slice()
+    .reverse()
+    .slice(0, 5);
+  return (
+    <>
+      <section>
+        <h2>HOME — {workspace.organization.name}</h2>
+        <p>
+          {workspace.teams.length} team{workspace.teams.length === 1 ? '' : 's'} ·{' '}
+          {workspace.players.length} player{workspace.players.length === 1 ? '' : 's'} ·{' '}
+          {workspace.games.length} game{workspace.games.length === 1 ? '' : 's'}
+        </p>
+        <div className="row">
+          <button onClick={() => props.onGoTab({ kind: 'live' })}>Live</button>
+          <button onClick={() => props.onGoTab({ kind: 'teams' })}>Team</button>
+          {canRole(props.role, 'head_coach') && (
+            <>
+              <button onClick={() => props.onGoTab({ kind: 'players' })}>Player Management</button>
+              <button onClick={() => props.onGoTab({ kind: 'highlights' })}>Highlight Builder</button>
+            </>
+          )}
+        </div>
+      </section>
+
+      {liveGames.length > 0 && (
+        <section>
+          <h2>Live now</h2>
+          <ul className="list">
+            {liveGames.map((g) => (
+              <GameListItem
+                key={g.id}
+                game={g}
+                teamName={teamName(g.team_id)}
+                onLive={() => props.onOpenLiveGame(g.id, 'live')}
+                onDetail={() => props.onOpenGame(g.id, 'live')}
+              />
+            ))}
+          </ul>
+        </section>
+      )}
+
+      <section>
+        <h2>Upcoming games</h2>
+        {upcomingGames.length === 0 ? (
+          <p>No upcoming games — create one on the Live tab.</p>
+        ) : (
+          <ul className="list">
+            {upcomingGames.map((g) => (
+              <GameListItem
+                key={g.id}
+                game={g}
+                teamName={teamName(g.team_id)}
+                onLive={() => props.onOpenLiveGame(g.id, 'live')}
+                onDetail={() => props.onOpenGame(g.id, 'live')}
+              />
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section>
+        <h2>Recent results</h2>
+        {recentFinals.length === 0 ? (
+          <p>No finished games yet.</p>
+        ) : (
+          <ul className="list">
+            {recentFinals.map((g) => (
+              <GameListItem
+                key={g.id}
+                game={g}
+                teamName={teamName(g.team_id)}
+                onLive={() => props.onOpenLiveGame(g.id, 'live')}
+                onDetail={() => props.onOpenGame(g.id, 'live')}
+              />
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section>
+        <h2>Teams</h2>
+        {workspace.teams.length === 0 ? (
+          <p>No teams yet.</p>
+        ) : (
+          <ul className="list">
+            {workspace.teams.map((t) => (
+              <li key={t.id}>
+                {t.name} ({t.sport}) — {workspace.players.filter((p) => p.team_id === t.id).length}{' '}
+                player{workspace.players.filter((p) => p.team_id === t.id).length === 1 ? '' : 's'}{' '}
+                <button onClick={() => props.onSelectTeam(t.id)}>Open roster</button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </>
+  );
+}
+
+/** Live tab (prototype "Capture"): the games list plus New Game
+ *  creation. Live stat tagging is entered from here via Live. */
+function LiveTabScreen(props: {
+  role: ClientRole;
+  teams: Team[];
+  games: Game[];
+  selectedTeamId: string;
+  onSelectTeam: (id: string) => void;
+  opponent: string;
+  onOpponentChange: (v: string) => void;
+  mode: 'live' | 'film';
+  onModeChange: (m: 'live' | 'film') => void;
+  onCreateGame: (e: React.FormEvent) => void;
+  onOpenLiveGame: (gameId: string) => void;
+  onOpenDetail: (gameId: string) => void;
+}) {
+  const teamName = (teamId: string) => props.teams.find((t) => t.id === teamId)?.name ?? 'Team';
+  const liveGames = props.games.filter((g) => g.status === 'live');
+  const upcomingGames = props.games.filter((g) => g.status === 'draft');
+  const finalGames = props.games.filter((g) => g.status === 'final');
+  const renderList = (list: Game[]) => (
+    <ul className="list">
+      {list.map((g) => (
+        <GameListItem
+          key={g.id}
+          game={g}
+          teamName={teamName(g.team_id)}
+          onLive={() => props.onOpenLiveGame(g.id)}
+          onDetail={() => props.onOpenDetail(g.id)}
+        />
+      ))}
+    </ul>
+  );
+  return (
+    <>
+      <section>
+        <h2>Live</h2>
+        {canRole(props.role, 'head_coach') && (
+          <form onSubmit={props.onCreateGame} className="row">
+            <select
+              value={props.selectedTeamId}
+              onChange={(e) => props.onSelectTeam(e.target.value)}
+              required
+            >
+              <option value="">Pick a team…</option>
+              {props.teams.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+            <input
+              value={props.opponent}
+              onChange={(e) => props.onOpponentChange(e.target.value)}
+              placeholder="Opponent"
+            />
+            <select
+              value={props.mode}
+              onChange={(e) => props.onModeChange(e.target.value as 'live' | 'film')}
+            >
+              <option value="live">Live game</option>
+              <option value="film">Film review</option>
+            </select>
+            <button type="submit">Create game</button>
+          </form>
+        )}
+        {liveGames.length > 0 && (
+          <>
+            <h3>Live now</h3>
+            {renderList(liveGames)}
+          </>
+        )}
+        <h3>Upcoming</h3>
+        {upcomingGames.length === 0 ? <p>No upcoming games.</p> : renderList(upcomingGames)}
+        <h3>Final</h3>
+        {finalGames.length === 0 ? <p>No finished games.</p> : renderList(finalGames)}
+      </section>
+    </>
+  );
+}
+
+/** Team tab: holds ALL rosters — team list, per-team roster
+ *  management, and that team's games. Roster edits stay head_coach+
+ *  (server enforces; the client only hides the forms). */
+function TeamsTabScreen(props: {
+  role: ClientRole;
+  teams: Team[];
+  players: Player[];
+  games: Game[];
+  selectedTeamId: string;
+  onSelectTeam: (id: string) => void;
+  teamName: string;
+  onTeamNameChange: (v: string) => void;
+  onCreateTeam: (e: React.FormEvent) => void;
+  playerName: string;
+  onPlayerNameChange: (v: string) => void;
+  playerJersey: string;
+  onPlayerJerseyChange: (v: string) => void;
+  playerPosition: string;
+  onPlayerPositionChange: (v: string) => void;
+  onAddPlayer: (e: React.FormEvent) => void;
+  onOpenProfile: (playerId: string) => void;
+  onOpenLiveGame: (gameId: string) => void;
+  onOpenDetail: (gameId: string) => void;
+}) {
+  const selectedTeam = props.teams.find((t) => t.id === props.selectedTeamId);
+  const roster = props.players.filter((p) => p.team_id === props.selectedTeamId);
+  const teamGames = props.games.filter((g) => g.team_id === props.selectedTeamId);
+  const teamName = (teamId: string) => props.teams.find((t) => t.id === teamId)?.name ?? 'Team';
+  return (
+    <>
+      <section>
+        <h2>Teams</h2>
+        {props.role === 'owner' && (
+          <form onSubmit={props.onCreateTeam} className="row">
+            <input
+              value={props.teamName}
+              onChange={(e) => props.onTeamNameChange(e.target.value)}
+              placeholder="New team name"
+              required
+            />
+            <button type="submit">Create team</button>
+          </form>
+        )}
+        <ul className="list">
+          {props.teams.map((t) => (
+            <li key={t.id}>
+              <button
+                className={t.id === props.selectedTeamId ? 'selected' : ''}
+                onClick={() => props.onSelectTeam(t.id)}
+              >
+                {t.name} ({t.sport})
+              </button>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      {selectedTeam && (
+        <section>
+          <h2>Roster — {selectedTeam.name}</h2>
+          {canRole(props.role, 'head_coach') && (
+            <form onSubmit={props.onAddPlayer} className="row">
+              <input
+                value={props.playerName}
+                onChange={(e) => props.onPlayerNameChange(e.target.value)}
+                placeholder="Player name"
+                required
+              />
+              <input
+                value={props.playerJersey}
+                onChange={(e) => props.onPlayerJerseyChange(e.target.value)}
+                placeholder="#"
+              />
+              <input
+                value={props.playerPosition}
+                onChange={(e) => props.onPlayerPositionChange(e.target.value)}
+                placeholder="Position"
+              />
+              <button type="submit">Add player</button>
+            </form>
+          )}
+          <ul className="list">
+            {roster.map((p) => (
+              <li key={p.id}>
+                #{p.jersey_number} {p.name} — {p.position}{' '}
+                <button onClick={() => props.onOpenProfile(p.id)}>Profile</button>
+              </li>
+            ))}
+          </ul>
+          {roster.length === 0 && <p>No players on this roster yet.</p>}
+
+          <h3>Games — {selectedTeam.name}</h3>
+          {teamGames.length === 0 ? (
+            <p>No games yet — create one on the Live tab.</p>
+          ) : (
+            <ul className="list">
+              {teamGames.map((g) => (
+                <GameListItem
+                  key={g.id}
+                  game={g}
+                  teamName={teamName(g.team_id)}
+                  onLive={() => props.onOpenLiveGame(g.id)}
+                  onDetail={() => props.onOpenDetail(g.id)}
+                />
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+    </>
+  );
+}
+
+/** Player Management (prototype "Profile"): every player across all
+ *  teams, grouped by team, each opening the full recruiting profile
+ *  (bio + measurables editing, auto stats, highlights, publish
+ *  controls). Head-coach+ only — the sidebar hides this tab below that,
+ *  and the server enforces profile edits. */
+function PlayersTabScreen(props: {
+  players: Player[];
+  teams: Team[];
+  onOpenProfile: (playerId: string) => void;
+}) {
+  return (
+    <section>
+      <h2>Player Management</h2>
+      <p className="sub-hint">
+        Every player across all teams. Open a profile to edit bio + measurables, see auto
+        stats and highlights, and manage the public link.
+      </p>
+      {props.teams.map((t) => {
+        const members = props.players.filter((p) => p.team_id === t.id);
+        if (members.length === 0) return null;
+        return (
+          <div key={t.id}>
+            <h3>{t.name}</h3>
+            <ul className="list">
+              {members.map((p) => (
+                <li key={p.id}>
+                  #{p.jersey_number} {p.name} — {p.position}{' '}
+                  <button onClick={() => props.onOpenProfile(p.id)}>Open profile</button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      })}
+      {props.players.length === 0 && <p>No players yet — add players on the Team tab.</p>}
+    </section>
+  );
+}
+
+/** Highlight Builder: the single home for ALL highlight building — the
+ *  reel library, automated Auto Reel builds, and manual building in
+ *  Reel Studio. Replaces the old Reels tab. */
+function HighlightBuilderScreen(props: {
+  role: ClientRole;
+  games: Game[];
+  teams: Team[];
+  onOpen: (reelId: string) => void;
+}) {
+  return (
+    <>
+      <section>
+        <h2>Highlight Builder</h2>
+        <p>
+          Automated builds, the reel library, and manual building in Reel Studio — all
+          highlights live here.
+        </p>
+      </section>
+      <AutoReelSection games={props.games} teams={props.teams} onOpen={props.onOpen} />
+      <ReelsListScreen role={props.role} games={props.games} teams={props.teams} onOpen={props.onOpen} />
+    </>
+  );
+}
+
+/** Automated builds: pick a game + preset, get a draft reel in Studio. */
+function AutoReelSection(props: {
+  games: Game[];
+  teams: Team[];
+  onOpen: (reelId: string) => void;
+}) {
+  const [gameId, setGameId] = useState('');
+  const [preset, setPreset] = useState<'hype' | 'clean' | 'simple'>('hype');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  return (
+    <section>
+      <h2>Auto Reel — automated builds</h2>
+      <p>
+        One tap builds a draft reel from a game&apos;s highlights (best plays first) and opens
+        it in Reel Studio for tweaking.
+      </p>
+      <div className="row">
+        <select value={gameId} onChange={(e) => setGameId(e.target.value)}>
+          <option value="">Pick a game…</option>
+          {props.games.map((g) => {
+            const team = props.teams.find((t) => t.id === g.team_id);
+            return (
+              <option key={g.id} value={g.id}>
+                {team?.name ?? 'Team'} vs {g.opponent || 'TBD'}
+              </option>
+            );
+          })}
+        </select>
+        <select value={preset} onChange={(e) => setPreset(e.target.value as 'hype' | 'clean' | 'simple')}>
+          <option value="hype">Hype — fades + overlays</option>
+          <option value="clean">Clean — cuts + overlays</option>
+          <option value="simple">Simple — cuts, no overlays</option>
+        </select>
+        <button
+          disabled={busy || !gameId}
+          onClick={async () => {
+            setBusy(true);
+            setError('');
+            try {
+              const reel = await api.autoReel(gameId, preset);
+              props.onOpen(reel.id);
+            } catch (e) {
+              setError(e instanceof Error ? e.message : 'Auto Reel failed');
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {busy ? 'Building…' : 'Build Auto Reel'}
+        </button>
+      </div>
+      {error && <p className="error">{error}</p>}
+    </section>
   );
 }
 
@@ -2442,7 +2918,7 @@ function ReelsListScreen(props: {
 
   return (
     <section>
-      <h2>Reels</h2>
+      <h2>Reel library</h2>
       {error && <p className="error">{error}</p>}
       {canRole(props.role, 'head_coach') && (
         <form onSubmit={handleCreate} className="row">
@@ -2463,8 +2939,8 @@ function ReelsListScreen(props: {
       )}
       {reels.length === 0 ? (
         <p>
-          No reels yet. Create one here, or use <strong>Auto Reel</strong> on a game&apos;s detail
-          page to build a draft from its highlights.
+          No reels yet. Create one here, or use <strong>Auto Reel</strong> above
+          to build a draft from a game&apos;s highlights.
         </p>
       ) : (
         <ul className="list">
@@ -2562,13 +3038,13 @@ function ReelStudioScreen(props: { role: ClientRole; reelId: string; workspace: 
   }, [previewPlaying, previewIndex, clips]);
 
   if (loading) return <section><p>Loading reel…</p></section>;
-  if (!reel) return <section><button onClick={props.onBack}>← Reels</button><p className="error">{error || 'Reel not found.'}</p></section>;
+  if (!reel) return <section><button onClick={props.onBack}>← Highlight Builder</button><p className="error">{error || 'Reel not found.'}</p></section>;
   // Defense-in-depth: the studio is only reachable via UI for
   // head_coach+, but a lower role landing here gets a note, not the editor.
   if (!canRole(props.role, 'head_coach')) {
     return (
       <section>
-        <button onClick={props.onBack}>← Reels</button>
+        <button onClick={props.onBack}>← Highlight Builder</button>
         <p>Your role does not allow editing reels.</p>
       </section>
     );
@@ -2641,7 +3117,7 @@ function ReelStudioScreen(props: { role: ClientRole; reelId: string; workspace: 
 
   return (
     <section>
-      <button onClick={props.onBack}>← Reels</button>
+      <button onClick={props.onBack}>← Highlight Builder</button>
       <h2>Reel Studio — {reel.name}</h2>
       <p>
         <small>
