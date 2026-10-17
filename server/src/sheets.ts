@@ -174,26 +174,51 @@ export async function exportGameToSheets(
       return { mode: 'failed', error: 'Google did not return an access token.' };
     }
 
-    // 2. Create the spreadsheet with the two tabs.
-    const createResult = await googleRequest(
-      'https://sheets.googleapis.com/v4/spreadsheets',
+    // 2. Create the spreadsheet via the Drive API (not Sheets
+    // spreadsheets.create). Google now returns 403 PERMISSION_DENIED for
+    // service accounts calling spreadsheets.create directly, even with
+    // the Sheets API enabled and a valid token; creating via Drive and
+    // then filling it with the Sheets API is the working path.
+    const driveCreateResult = await googleRequest(
+      'https://www.googleapis.com/drive/v3/files',
+      'POST',
+      accessToken,
+      { name: title, mimeType: 'application/vnd.google-apps.spreadsheet' },
+    );
+    if (!driveCreateResult.ok) {
+      return {
+        mode: 'failed',
+        error: `drive-create: ${googleError(driveCreateResult, 'Could not create the spreadsheet file.')} [granted scope: ${grantedScope}]`,
+      };
+    }
+    const created = JSON.parse(driveCreateResult.body) as { id?: string };
+    const sheetId = created.id;
+    if (!sheetId) {
+      return { mode: 'failed', error: 'Google did not return a spreadsheet ID.' };
+    }
+
+    // 2b. Rename the default Sheet1 tab to "Box Score" and add "Timeline".
+    const tabsResult = await googleRequest(
+      `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}:batchUpdate`,
       'POST',
       accessToken,
       {
-        properties: { title },
-        sheets: [{ properties: { title: 'Box Score' } }, { properties: { title: 'Timeline' } }],
+        requests: [
+          {
+            updateSheetProperties: {
+              properties: { sheetId: 0, title: 'Box Score' },
+              fields: 'title',
+            },
+          },
+          { addSheet: { properties: { title: 'Timeline' } } },
+        ],
       },
     );
-    if (!createResult.ok) {
+    if (!tabsResult.ok) {
       return {
         mode: 'failed',
-        error: `create: ${googleError(createResult, 'Could not create the spreadsheet.')} [granted scope: ${grantedScope}]`,
+        error: `tabs: ${googleError(tabsResult, 'Could not set up the spreadsheet tabs.')} [granted scope: ${grantedScope}]`,
       };
-    }
-    const created = JSON.parse(createResult.body) as { spreadsheetId?: string };
-    const sheetId = created.spreadsheetId;
-    if (!sheetId) {
-      return { mode: 'failed', error: 'Google did not return a spreadsheet ID.' };
     }
 
     // 3. Write both tabs in one batchUpdate (headers + rows each).
