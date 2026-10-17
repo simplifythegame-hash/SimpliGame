@@ -11,8 +11,8 @@
  * - Third-party origins (YouTube embeds, etc.) are left alone entirely.
  */
 
-const CACHE = 'simpligame-v1';
-const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg', '/favicon.svg'];
+const CACHE = 'simpligame-v2';
+const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg?v=2', '/favicon.svg?v=2'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
