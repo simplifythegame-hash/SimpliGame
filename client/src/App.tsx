@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from './api';
-import type { AuthUser, Coach, EnrollInfo, FamilyContact, Game, GameAnalysis, GameEvent, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Team, Workspace } from './types';
+import type { AuthUser, Coach, EnrollInfo, FamilyContact, Game, GameAnalysis, GameEvent, LineupRow, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Team, Workspace } from './types';
 import YouTubePlayer from './components/YouTubePlayer';
 import VideoPlaceholder from './components/VideoPlaceholder';
 import Icon, { type IconName } from './components/Icon';
@@ -117,8 +117,6 @@ export default function App() {
   const [playerName, setPlayerName] = useState('');
   const [playerJersey, setPlayerJersey] = useState('');
   const [playerPosition, setPlayerPosition] = useState('');
-  const [opponent, setOpponent] = useState('');
-  const [mode, setMode] = useState<'live' | 'film'>('live');
   const [youtubeUrl, setYoutubeUrl] = useState('');
   const [editingOrg, setEditingOrg] = useState(false);
   const [orgName, setOrgName] = useState('');
@@ -222,14 +220,32 @@ export default function App() {
     });
   }
 
-  async function handleCreateGame(e: React.FormEvent) {
-    e.preventDefault();
-    if (!selectedTeamId) return;
+  // Start Live Game flow (Live tab): create a game WITHOUT jumping to
+  // the live screen — the coach stays in the setup panel (lineup +
+  // video link) until the Go Live gate is met.
+  async function handleCreateGameForSetup(teamId: string, opponent: string, mode: 'live' | 'film') {
+    const game = await api.createGame(teamId, opponent, 'Volleyball', mode);
+    await refresh();
+    return game;
+  }
+
+  async function handleSetLineup(gameId: string, playerIds: string[]) {
     await run(async () => {
-      const game = await api.createGame(selectedTeamId, opponent, 'Volleyball', mode);
-      setOpponent('');
-      setView({ kind: 'liveGame', gameId: game.id, returnTo: 'live' });
+      await api.setLineup(gameId, playerIds);
     });
+  }
+
+  async function handleSaveYouTubeForGame(gameId: string, url: string) {
+    await run(async () => {
+      await api.saveYouTube(gameId, url);
+    });
+  }
+
+  async function handleGoLiveFromSetup(gameId: string) {
+    await run(async () => {
+      await api.setGameStatus(gameId, 'live');
+    });
+    setView({ kind: 'liveGame', gameId, returnTo: 'live' });
   }
 
   async function handleLogEvent(stat: { label: string; points: number; side: 'ours' | 'opponent' }) {
@@ -262,6 +278,22 @@ export default function App() {
         player_id: null,
         stat_type: 'Opponent point',
         side: 'opponent',
+        points: 1,
+        video_seconds: 0,
+      });
+    });
+  }
+
+  // Manual-mode score control: a hand-managed our-side point. Mirrors
+  // the existing 'Opponent point' event (player_id null, no stat
+  // attached) so the score moves without polluting player stats.
+  async function handleOurScores() {
+    if (!currentGame) return;
+    await run(async () => {
+      await api.logEvent(currentGame.id, {
+        player_id: null,
+        stat_type: 'Our point',
+        side: 'ours',
         points: 1,
         video_seconds: 0,
       });
@@ -458,14 +490,13 @@ export default function App() {
         <LiveTabScreen
           role={me.role}
           teams={workspace.teams}
+          players={workspace.players}
           games={workspace.games}
-          selectedTeamId={selectedTeamId}
-          onSelectTeam={setSelectedTeamId}
-          opponent={opponent}
-          onOpponentChange={setOpponent}
-          mode={mode}
-          onModeChange={setMode}
-          onCreateGame={handleCreateGame}
+          lineups={workspace.lineups}
+          onCreateGameForSetup={handleCreateGameForSetup}
+          onSetLineup={handleSetLineup}
+          onSaveYouTubeForGame={handleSaveYouTubeForGame}
+          onGoLive={handleGoLiveFromSetup}
           onOpenLiveGame={(gameId) => setView({ kind: 'liveGame', gameId, returnTo: 'live' })}
           onOpenDetail={(gameId) => setView({ kind: 'detail', gameId, returnTo: 'live' })}
         />
@@ -492,6 +523,7 @@ export default function App() {
           onSelectPlayer={setSelectedPlayerId}
           onLogEvent={handleLogEvent}
           onOpponentScores={handleOpponentScores}
+          onOurScores={handleOurScores}
           onUndo={async () => run(() => api.undo(currentGame.id))}
           onSetStatus={async (status) => run(() => api.setGameStatus(currentGame.id, status))}
           onSub={async (outPlayerId, inPlayerId) => {
@@ -761,82 +793,345 @@ function HomeOverviewScreen(props: {
   );
 }
 
-/** Live tab (prototype "Capture"): the games list plus New Game
- *  creation. Live stat tagging is entered from here via Live. */
+/** Live tab (prototype "Capture"): Start Live Game flow.
+ *  The main page lists the ROSTERS (teams). Click a team → the Start
+ *  Live Game panel: pick an existing draft game or create one, choose
+ *  the 6 starters, add the video link — then Go Live (gated on 6
+ *  starters + video link) jumps straight to the live screen. Live-now
+ *  games keep a quick resume strip; finals stay listed below. */
 function LiveTabScreen(props: {
   role: ClientRole;
   teams: Team[];
+  players: Player[];
   games: Game[];
-  selectedTeamId: string;
-  onSelectTeam: (id: string) => void;
-  opponent: string;
-  onOpponentChange: (v: string) => void;
-  mode: 'live' | 'film';
-  onModeChange: (m: 'live' | 'film') => void;
-  onCreateGame: (e: React.FormEvent) => void;
+  lineups: LineupRow[];
+  onCreateGameForSetup: (teamId: string, opponent: string, mode: 'live' | 'film') => Promise<Game>;
+  onSetLineup: (gameId: string, playerIds: string[]) => Promise<void>;
+  onSaveYouTubeForGame: (gameId: string, url: string) => Promise<void>;
+  onGoLive: (gameId: string) => Promise<void>;
   onOpenLiveGame: (gameId: string) => void;
   onOpenDetail: (gameId: string) => void;
 }) {
   const teamName = (teamId: string) => props.teams.find((t) => t.id === teamId)?.name ?? 'Team';
   const liveGames = props.games.filter((g) => g.status === 'live');
-  const upcomingGames = props.games.filter((g) => g.status === 'draft');
   const finalGames = props.games.filter((g) => g.status === 'final');
-  const renderList = (list: Game[]) => (
-    <ul className="list">
-      {list.map((g) => (
-        <GameListItem
-          key={g.id}
-          game={g}
-          teamName={teamName(g.team_id)}
-          onLive={() => props.onOpenLiveGame(g.id)}
-          onDetail={() => props.onOpenDetail(g.id)}
-        />
-      ))}
-    </ul>
+
+  // --- Start Live Game panel state ---
+  const [selectedTeamId, setSelectedTeamId] = useState('');
+  const [setupGameId, setSetupGameId] = useState<string | null>(null);
+  const [starterIds, setStarterIds] = useState<string[]>([]);
+  const [lineupSaved, setLineupSaved] = useState(false);
+  const [videoInput, setVideoInput] = useState('');
+  const [setupBusy, setSetupBusy] = useState(false);
+  const [setupError, setSetupError] = useState('');
+  const [newOpponent, setNewOpponent] = useState('');
+  const [newMode, setNewMode] = useState<'live' | 'film'>('live');
+
+  const selectedTeam = props.teams.find((t) => t.id === selectedTeamId);
+  const roster = props.players.filter((p) => p.team_id === selectedTeamId);
+  const setupGame = props.games.find((g) => g.id === setupGameId);
+  const draftGamesForTeam = props.games.filter(
+    (g) => g.team_id === selectedTeamId && g.status === 'draft',
   );
+
+  // When a game is picked/created, pre-select its current lineup (game
+  // creation seeds the first 6) and mark it saved iff it is exactly 6.
+  // Keyed on the game only — a refresh (e.g. saving the video link)
+  // must NOT wipe an unsaved starter selection.
+  useEffect(() => {
+    if (!setupGameId) return;
+    const rows = props.lineups.filter((l) => l.game_id === setupGameId);
+    setStarterIds(rows.map((r) => r.player_id));
+    setLineupSaved(rows.length === 6);
+    setVideoInput('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setupGameId]);
+
+  function pickTeam(teamId: string) {
+    setSelectedTeamId(teamId);
+    setSetupGameId(null);
+    setStarterIds([]);
+    setLineupSaved(false);
+    setVideoInput('');
+    setSetupError('');
+    setNewOpponent('');
+  }
+
+  function toggleStarter(playerId: string) {
+    setStarterIds((prev) => {
+      if (prev.includes(playerId)) return prev.filter((id) => id !== playerId);
+      if (prev.length >= 6) return prev;
+      return [...prev, playerId];
+    });
+    // Any change means the saved lineup no longer matches the picks.
+    setLineupSaved(false);
+  }
+
+  async function saveLineup() {
+    if (!setupGameId || starterIds.length !== 6) return;
+    setSetupBusy(true);
+    setSetupError('');
+    try {
+      await props.onSetLineup(setupGameId, starterIds);
+      setLineupSaved(true);
+    } catch (e) {
+      setSetupError(e instanceof Error ? e.message : 'Could not save lineup');
+    } finally {
+      setSetupBusy(false);
+    }
+  }
+
+  async function saveVideo() {
+    if (!setupGameId || !videoInput.trim()) return;
+    setSetupBusy(true);
+    setSetupError('');
+    try {
+      await props.onSaveYouTubeForGame(setupGameId, videoInput.trim());
+      setVideoInput('');
+    } catch (e) {
+      setSetupError(e instanceof Error ? e.message : 'Could not save video link');
+    } finally {
+      setSetupBusy(false);
+    }
+  }
+
+  async function goLive() {
+    if (!setupGameId) return;
+    setSetupBusy(true);
+    setSetupError('');
+    try {
+      await props.onGoLive(setupGameId);
+    } catch (e) {
+      setSetupError(e instanceof Error ? e.message : 'Could not go live');
+      setSetupBusy(false);
+    }
+  }
+
+  // Go Live GATE: all 6 starters picked + saved AND a video link saved.
+  const videoSaved = !!setupGame?.youtube_video_id;
+  const gateOk = lineupSaved && videoSaved;
+
   return (
     <>
       <section>
         <h2>Live</h2>
-        {canRole(props.role, 'head_coach') && (
-          <form onSubmit={props.onCreateGame} className="row">
-            <select
-              value={props.selectedTeamId}
-              onChange={(e) => props.onSelectTeam(e.target.value)}
-              required
-            >
-              <option value="">Pick a team…</option>
-              {props.teams.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-            <input
-              value={props.opponent}
-              onChange={(e) => props.onOpponentChange(e.target.value)}
-              placeholder="Opponent"
-            />
-            <select
-              value={props.mode}
-              onChange={(e) => props.onModeChange(e.target.value as 'live' | 'film')}
-            >
-              <option value="live">Live game</option>
-              <option value="film">Film review</option>
-            </select>
-            <button type="submit">Create game</button>
-          </form>
-        )}
         {liveGames.length > 0 && (
           <>
             <h3>Live now</h3>
-            {renderList(liveGames)}
+            <ul className="list">
+              {liveGames.map((g) => (
+                <GameListItem
+                  key={g.id}
+                  game={g}
+                  teamName={teamName(g.team_id)}
+                  onLive={() => props.onOpenLiveGame(g.id)}
+                  onDetail={() => props.onOpenDetail(g.id)}
+                />
+              ))}
+            </ul>
           </>
         )}
-        <h3>Upcoming</h3>
-        {upcomingGames.length === 0 ? <p>No upcoming games.</p> : renderList(upcomingGames)}
+
+        <h3>Start Live Game</h3>
+        <p>Pick a roster, then set up the game — 6 starters + video link — and go live.</p>
+        <ul className="list">
+          {props.teams.map((t) => (
+            <li key={t.id}>
+              <button
+                className={t.id === selectedTeamId ? 'selected' : ''}
+                onClick={() => pickTeam(t.id)}
+              >
+                {t.name} ({props.players.filter((p) => p.team_id === t.id).length} players)
+              </button>
+            </li>
+          ))}
+        </ul>
+        {props.teams.length === 0 && <p>No teams yet — create one on the Team tab.</p>}
+
+        {selectedTeam && (
+          <div className="setup-panel">
+            <h3>Start Live Game — {selectedTeam.name}</h3>
+            {!setupGame ? (
+              <>
+                <h4>1. Pick a game</h4>
+                {draftGamesForTeam.length === 0 ? (
+                  <p>No upcoming games for this team — create one below.</p>
+                ) : (
+                  <ul className="list">
+                    {draftGamesForTeam.map((g) => (
+                      <li key={g.id}>
+                        vs {g.opponent || 'TBD'} · {g.mode === 'film' ? 'Film review' : 'Live game'}{' '}
+                        <button onClick={() => setSetupGameId(g.id)}>Use this game</button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {canRole(props.role, 'head_coach') && (
+                  <form
+                    className="row"
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      setSetupBusy(true);
+                      setSetupError('');
+                      try {
+                        const game = await props.onCreateGameForSetup(
+                          selectedTeamId,
+                          newOpponent,
+                          newMode,
+                        );
+                        setNewOpponent('');
+                        setSetupGameId(game.id);
+                      } catch (err) {
+                        setSetupError(err instanceof Error ? err.message : 'Could not create game');
+                      } finally {
+                        setSetupBusy(false);
+                      }
+                    }}
+                  >
+                    <input
+                      value={newOpponent}
+                      onChange={(e) => setNewOpponent(e.target.value)}
+                      placeholder="Opponent"
+                    />
+                    <select
+                      value={newMode}
+                      onChange={(e) => setNewMode(e.target.value as 'live' | 'film')}
+                    >
+                      <option value="live">Live game</option>
+                      <option value="film">Film review</option>
+                    </select>
+                    <button type="submit" disabled={setupBusy}>
+                      {setupBusy ? 'Creating…' : 'Create game'}
+                    </button>
+                  </form>
+                )}
+                {setupError && <p className="error">{setupError}</p>}
+              </>
+            ) : (
+              <>
+                <p>
+                  <strong>
+                    {selectedTeam.name} vs {setupGame.opponent || 'TBD'}
+                  </strong>{' '}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSetupGameId(null);
+                      setStarterIds([]);
+                      setLineupSaved(false);
+                      setVideoInput('');
+                    }}
+                  >
+                    Change game
+                  </button>
+                </p>
+
+                <h4>2. Choose 6 to start</h4>
+                <p>{starterIds.length} of 6 selected</p>
+                {roster.length < 6 ? (
+                  <p>Add at least 6 players to this roster first (Team tab).</p>
+                ) : (
+                  <>
+                    <div className="cards">
+                      {roster.map((p) => (
+                        <button
+                          key={p.id}
+                          className={`card ${starterIds.includes(p.id) ? 'selected' : ''}`}
+                          onClick={() => toggleStarter(p.id)}
+                          disabled={!canRole(props.role, 'head_coach')}
+                        >
+                          <strong>#{p.jersey_number}</strong>
+                          <br />
+                          {p.name}
+                          <br />
+                          <small>{p.position}</small>
+                        </button>
+                      ))}
+                    </div>
+                    {canRole(props.role, 'head_coach') &&
+                      (lineupSaved ? (
+                        <p>✓ Starting 6 set.</p>
+                      ) : (
+                        <button disabled={starterIds.length !== 6 || setupBusy} onClick={saveLineup}>
+                          Set starting 6
+                        </button>
+                      ))}
+                  </>
+                )}
+
+                <h4>3. Go Live link setup</h4>
+                {videoSaved ? (
+                  <p>✓ Video link saved. Replace it below if needed.</p>
+                ) : (
+                  <p>Add the video link before going live.</p>
+                )}
+                {canRole(props.role, 'head_coach') && (
+                  <form
+                    className="row"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void saveVideo();
+                    }}
+                  >
+                    <input
+                      value={videoInput}
+                      onChange={(e) => setVideoInput(e.target.value)}
+                      placeholder="Paste YouTube link or video ID"
+                      className="wide"
+                    />
+                    <button
+                      type="submit"
+                      disabled={!videoInput.trim() || setupBusy}
+                      className="btn-icon"
+                    >
+                      <Icon name="check" />Save video
+                    </button>
+                  </form>
+                )}
+
+                <h4>Go Live</h4>
+                {!gateOk && (
+                  <p className="sub-hint">
+                    To go live:{' '}
+                    {!lineupSaved ? 'set the starting 6' : ''}
+                    {!lineupSaved && !videoSaved ? ' + ' : ''}
+                    {!videoSaved ? 'add the video link' : ''}.
+                  </p>
+                )}
+                {canRole(props.role, 'assistant') ? (
+                  <button
+                    disabled={!gateOk || setupBusy}
+                    onClick={() => void goLive()}
+                    className="btn-icon"
+                  >
+                    <Icon name="goLive" />
+                    {setupBusy ? 'Going live…' : 'Go Live'}
+                  </button>
+                ) : (
+                  <p className="sub-hint">An assistant or head coach starts the game.</p>
+                )}
+                {setupError && <p className="error">{setupError}</p>}
+              </>
+            )}
+          </div>
+        )}
+
         <h3>Final</h3>
-        {finalGames.length === 0 ? <p>No finished games.</p> : renderList(finalGames)}
+        {finalGames.length === 0 ? (
+          <p>No finished games.</p>
+        ) : (
+          <ul className="list">
+            {finalGames.map((g) => (
+              <GameListItem
+                key={g.id}
+                game={g}
+                teamName={teamName(g.team_id)}
+                onLive={() => props.onOpenLiveGame(g.id)}
+                onDetail={() => props.onOpenDetail(g.id)}
+              />
+            ))}
+          </ul>
+        )}
       </section>
     </>
   );
@@ -1755,6 +2050,14 @@ function InstallPrompt() {
   return null;
 }
 
+/** Volleyball hitting % renders as .333 (no leading zero), negatives as -.100. */
+function formatHittingPct(v: number): string {
+  const s = v.toFixed(3);
+  if (s.startsWith('0.')) return s.slice(1);
+  if (s.startsWith('-0.')) return '-' + s.slice(2);
+  return s;
+}
+
 function LiveGameScreen(props: {
   role: ClientRole;
   game: Game;
@@ -1770,6 +2073,7 @@ function LiveGameScreen(props: {
   onSelectPlayer: (id: string) => void;
   onLogEvent: (stat: { label: string; points: number; side: 'ours' | 'opponent' }) => void;
   onOpponentScores: () => void;
+  onOurScores: () => void;
   onUndo: () => void;
   onSub: (outPlayerId: string, inPlayerId: string) => Promise<void>;
   onSetStatus: (status: 'live' | 'final') => Promise<void>;
@@ -1794,6 +2098,12 @@ function LiveGameScreen(props: {
   const [subIn, setSubIn] = useState<string | null>(null);
   // YouTube dropdown under the video: collapsed by default.
   const [youtubeOpen, setYoutubeOpen] = useState(false);
+  // Stat mode: automatic (default) — one stat tap auto-updates score,
+  // box score, player totals, and derived stats. Manual ("Keep stats
+  // manually") — stat taps record the play but do NOT move the score;
+  // the coach manages the score by hand with the score buttons below.
+  // Per-game-session only — not persisted to the server.
+  const [manualMode, setManualMode] = useState(false);
   // Stat buttons stay up even with no player selected — tapping one
   // with no selection shows this hint + briefly highlights the
   // on-court cards instead of recording anything.
@@ -1809,7 +2119,10 @@ function LiveGameScreen(props: {
       setStatHint(true);
       return;
     }
-    props.onLogEvent(s);
+    // Manual mode: record the play (player + type + timestamp) but do
+    // NOT auto-update the score — points: 0 keeps the server's running
+    // score untouched while the event still lands.
+    props.onLogEvent(manualMode ? { ...s, points: 0 } : s);
   }
 
   function exitSubMode() {
@@ -1831,16 +2144,36 @@ function LiveGameScreen(props: {
   // computation as Game Detail, so both screens always agree. Points
   // only count for our side: a Serve Error / Passing Error is recorded
   // with side 'opponent' and its point belongs to the opponent, not
-  // to the player who made the error.
+  // to the player who made the error. Hitting % = (Kills − Errors) /
+  // Attack Attempts; Errors = the error types the stat set tracks
+  // (Serve + Passing + generic Error). Null when the player has no
+  // attempts yet — no dividing by zero.
   const boxScore = useMemo(() => {
-    const byPlayer = new Map<string, { name: string; stats: Record<string, number>; points: number }>();
+    const byPlayer = new Map<
+      string,
+      { name: string; stats: Record<string, number>; points: number; hitting: number | null }
+    >();
     for (const e of props.events) {
       if (!e.player_id) continue;
       const player = props.players.find((p) => p.id === e.player_id);
-      const entry = byPlayer.get(e.player_id) ?? { name: player?.name ?? 'Unknown', stats: {}, points: 0 };
+      const entry = byPlayer.get(e.player_id) ?? {
+        name: player?.name ?? 'Unknown',
+        stats: {},
+        points: 0,
+        hitting: null,
+      };
       entry.stats[e.stat_type] = (entry.stats[e.stat_type] ?? 0) + 1;
       if (e.side === 'ours') entry.points += e.points;
       byPlayer.set(e.player_id, entry);
+    }
+    for (const entry of byPlayer.values()) {
+      const kills = entry.stats['Kill'] ?? 0;
+      const attempts = (entry.stats['Attack Attempt'] ?? 0) + (entry.stats['Attack attempt'] ?? 0);
+      const errors =
+        (entry.stats['Serve Error'] ?? 0) +
+        (entry.stats['Passing Error'] ?? 0) +
+        (entry.stats['Error'] ?? 0);
+      entry.hitting = attempts > 0 ? (kills - errors) / attempts : null;
     }
     return [...byPlayer.values()];
   }, [props.events, props.players]);
@@ -1943,6 +2276,25 @@ function LiveGameScreen(props: {
         </div>
       )}
 
+      {/* Stat mode: checkbox BELOW the video screen. Unchecked =
+          automatic (default): one stat tap updates score, box score,
+          player totals, and derived stats. Checked = manual: stat taps
+          record the play but do not move the score. */}
+      <label className="manual-stats-toggle">
+        <input
+          type="checkbox"
+          checked={manualMode}
+          onChange={(e) => setManualMode(e.target.checked)}
+        />
+        Keep stats manually
+      </label>
+      {manualMode && (
+        <p className="sub-hint">
+          Manual mode — stat taps record the play without changing the score. Manage the score
+          by hand with the score buttons below.
+        </p>
+      )}
+
       <h3>On court — tap a player, then tap a stat</h3>
       <div className={`cards ${statHint ? 'cards-need-player' : ''}`}>
         {onCourt.map((p) => (
@@ -2011,14 +2363,22 @@ function LiveGameScreen(props: {
               <button key={s.label} onClick={() => handleStatClick(s)} className="btn-icon">
                 <Icon name={s.icon} />
                 {s.label}
-                {s.points > 0 && s.side === 'ours' ? ` (+${s.points})` : ''}
-                {s.points > 0 && s.side === 'opponent' ? ' (opp +1)' : ''}
+                {/* In manual mode stat taps do not move the score, so
+                    the point labels would lie — hide them. */}
+                {!manualMode && s.points > 0 && s.side === 'ours' ? ` (+${s.points})` : ''}
+                {!manualMode && s.points > 0 && s.side === 'opponent' ? ' (opp +1)' : ''}
               </button>
             ))}
           </div>
         </>
       )}
       <div className="row">
+        {/* Manual mode: the coach manages the score by hand — Us +1
+            alongside the existing Opponent scores button. In automatic
+            mode the score follows stat taps, so Us +1 stays hidden. */}
+        {manualMode && (
+          <button onClick={props.onOurScores} className="btn-icon"><Icon name="plus" />Us scores (+1)</button>
+        )}
         <button onClick={props.onOpponentScores} className="btn-icon"><Icon name="plus" />Opponent scores (+1)</button>
         <button onClick={props.onUndo} className="btn-icon"><Icon name="undo" />Undo last event</button>
       </div>
@@ -2051,24 +2411,35 @@ function LiveGameScreen(props: {
       {boxScore.length === 0 ? (
         <p>No events logged yet.</p>
       ) : (
-        <table className="boxscore">
-          <thead>
-            <tr>
-              <th>Player</th>
-              <th>Points</th>
-              <th>Stats</th>
-            </tr>
-          </thead>
-          <tbody>
-            {boxScore.map((row) => (
-              <tr key={row.name}>
-                <td>{row.name}</td>
-                <td>{row.points}</td>
-                <td>{Object.entries(row.stats).map(([k, v]) => `${k}: ${v}`).join(' · ')}</td>
+        <>
+          <table className="boxscore">
+            <thead>
+              <tr>
+                <th>Player</th>
+                <th>Points</th>
+                {/* Derived auto-stats show in automatic mode only —
+                    manual mode shows raw counts. */}
+                {!manualMode && <th title="(Kills − Errors) / Attack Attempts">Hitting %</th>}
+                <th>Stats</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {boxScore.map((row) => (
+                <tr key={row.name}>
+                  <td>{row.name}</td>
+                  <td>{row.points}</td>
+                  {!manualMode && (
+                    <td>{row.hitting === null ? '—' : formatHittingPct(row.hitting)}</td>
+                  )}
+                  <td>{Object.entries(row.stats).map(([k, v]) => `${k}: ${v}`).join(' · ')}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!manualMode && (
+            <p className="sub-hint">Hitting % = (Kills − Errors) / Attack Attempts.</p>
+          )}
+        </>
       )}
 
     </section>
