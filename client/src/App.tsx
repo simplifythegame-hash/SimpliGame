@@ -3,6 +3,7 @@ import { api } from './api';
 import type { AuthUser, Coach, EnrollInfo, FamilyContact, Game, GameAnalysis, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Team, Workspace } from './types';
 import YouTubePlayer from './components/YouTubePlayer';
 import VideoPlaceholder from './components/VideoPlaceholder';
+import { downloadGameCsv } from './csv';
 import './styles.css';
 
 /** Stat buttons for the live screen. Points follow volleyball scoring:
@@ -28,6 +29,7 @@ type View =
   | { kind: 'profile'; playerId: string; from: 'teams' | 'players' }
   | { kind: 'highlights' }
   | { kind: 'studio'; reelId: string | null }
+  | { kind: 'exports' }
   | { kind: 'coaches' };
 
 /**
@@ -269,7 +271,9 @@ export default function App() {
                   ? 'highlights'
                   : view.kind === 'studio'
                     ? 'studio'
-                    : 'coaches';
+                    : view.kind === 'exports'
+                      ? 'exports'
+                      : 'coaches';
 
   async function handleLogout() {
     try {
@@ -387,6 +391,14 @@ export default function App() {
             }
           >
             Reel Studio
+          </button>
+        )}
+        {canRole(me.role, 'head_coach') && (
+          <button
+            className={activeTab === 'exports' ? 'selected' : ''}
+            onClick={() => setView({ kind: 'exports' })}
+          >
+            Export Center
           </button>
         )}
         {me.role === 'owner' && (
@@ -559,6 +571,8 @@ export default function App() {
             onOpen={(reelId) => setView({ kind: 'studio', reelId })}
           />
         ))}
+
+      {view.kind === 'exports' && <ExportCenterScreen workspace={workspace} />}
 
       {view.kind === 'coaches' && me.role === 'owner' && (
         <CoachesScreen teams={workspace.teams} onBack={() => setView({ kind: 'home' })} />
@@ -1818,55 +1832,11 @@ function GameDetailScreen(props: {
     return [...byPlayer.values()];
   }, [props.events, props.players]);
 
-  // CSV export: a real CSV built client-side from the same game data,
+  // CSV export via the shared builder (same CSV the Export Center
+  // produces) — a real CSV built client-side from the same game data,
   // so export always works — with or without Google configured.
-  // Columns mirror the Google Sheets tabs (Box Score, Timeline).
-  function csvEscape(value: string | number): string {
-    const s = String(value);
-    if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-    return s;
-  }
-
   function downloadCsv() {
-    const statTypes = [...new Set(props.events.map((e) => e.stat_type))].sort();
-    const lines: string[] = [];
-    lines.push('Box Score');
-    lines.push(['Player', 'Jersey', 'Points', ...statTypes].map(csvEscape).join(','));
-    for (const row of boxScore) {
-      const player = props.players.find((p) => p.name === row.name);
-      lines.push(
-        [row.name, player?.jersey_number ?? '', row.points, ...statTypes.map((t) => row.stats[t] ?? 0)]
-          .map(csvEscape)
-          .join(','),
-      );
-    }
-    lines.push('');
-    lines.push('Timeline');
-    lines.push(['Time', 'Player', 'Stat', 'Side', 'Points', 'Video'].map(csvEscape).join(','));
-    for (const e of props.events) {
-      const player = props.players.find((p) => p.id === e.player_id);
-      lines.push(
-        [
-          new Date(e.created_at).toLocaleString(),
-          player?.name ?? (e.side === 'opponent' ? 'Opponent' : 'Team'),
-          e.stat_type,
-          e.side,
-          e.points,
-          formatTimestamp(e.video_seconds),
-        ]
-          .map(csvEscape)
-          .join(','),
-      );
-    }
-    const blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `simpligame-${props.game.opponent || 'game'}-${props.game.id.slice(0, 8)}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    downloadGameCsv(props.game, props.players, props.events);
   }
 
   return (
@@ -3009,6 +2979,150 @@ function ReelsListScreen(props: {
         </ul>
       )}
     </section>
+  );
+}
+
+/**
+ * Export Center — the central hub for ALL exports. Every game (across
+ * the coach's teams) with Export to Google Sheets + Download CSV
+ * actions, plus the Past Exports list (every Sheets export, newest
+ * first). Reuses the existing export endpoints and the shared CSV
+ * builder — the per-game Export section inside Game Detail stays
+ * as-is as a convenience.
+ */
+function ExportCenterScreen(props: { workspace: Workspace }) {
+  type PastExport = SheetExport & {
+    opponent: string;
+    status: string;
+    our_score: number;
+    opponent_score: number;
+    team_name: string;
+  };
+  const [pastExports, setPastExports] = useState<PastExport[]>([]);
+  const [pastError, setPastError] = useState('');
+  const [busyGameId, setBusyGameId] = useState<string | null>(null);
+  const [exportResults, setExportResults] = useState<Record<string, { sheetUrl?: string; error?: string }>>({});
+
+  const loadPastExports = useCallback(() => {
+    api
+      .getAllSheetExports()
+      .then(setPastExports)
+      .catch((e) => setPastError(e instanceof Error ? e.message : 'Failed to load past exports'));
+  }, []);
+
+  useEffect(() => {
+    loadPastExports();
+  }, [loadPastExports]);
+
+  async function handleExportSheets(gameId: string) {
+    setBusyGameId(gameId);
+    setExportResults((prev) => ({ ...prev, [gameId]: {} }));
+    try {
+      const result = await api.exportToSheets(gameId);
+      if (result.notConfigured) {
+        setExportResults((prev) => ({
+          ...prev,
+          [gameId]: { error: 'Google Sheets is not configured yet — set the Google OAuth env vars on the server, then try again. (The CSV download works right now.)' },
+        }));
+      } else if (result.sheetUrl) {
+        setExportResults((prev) => ({ ...prev, [gameId]: { sheetUrl: result.sheetUrl } }));
+        loadPastExports();
+      } else {
+        setExportResults((prev) => ({ ...prev, [gameId]: { error: 'Export did not return a Sheet link.' } }));
+      }
+    } catch (e) {
+      setExportResults((prev) => ({
+        ...prev,
+        [gameId]: { error: e instanceof Error ? e.message : 'Export failed' },
+      }));
+    } finally {
+      setBusyGameId(null);
+    }
+  }
+
+  const games = props.workspace.games;
+  const players = props.workspace.players;
+  const events = props.workspace.events;
+
+  return (
+    <>
+      <section>
+        <h2>Export Center</h2>
+        <p>
+          Every game in one place — export any game to Google Sheets or download its CSV.
+          Sheets exports are recorded below so you can reopen them anytime.
+        </p>
+      </section>
+
+      <section>
+        <h3>Games</h3>
+        {games.length === 0 ? (
+          <p>No games yet — create one from the Live tab.</p>
+        ) : (
+          <ul className="list">
+            {games.map((g) => {
+              const team = props.workspace.teams.find((t) => t.id === g.team_id);
+              const result = exportResults[g.id];
+              return (
+                <li key={g.id}>
+                  <strong>{team?.name ?? 'Team'} vs {g.opponent || 'TBD'}</strong> · {g.status} ·{' '}
+                  {g.our_score}:{g.opponent_score} · {g.period_label}
+                  <div className="row">
+                    <button
+                      type="button"
+                      disabled={busyGameId === g.id}
+                      onClick={() => handleExportSheets(g.id)}
+                    >
+                      {busyGameId === g.id ? 'Exporting…' : 'Export to Google Sheets'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        downloadGameCsv(
+                          g,
+                          players.filter((p) => p.team_id === g.team_id),
+                          events.filter((e) => e.game_id === g.id),
+                        )
+                      }
+                    >
+                      Download CSV
+                    </button>
+                  </div>
+                  {result?.sheetUrl && (
+                    <p>
+                      <a href={result.sheetUrl} target="_blank" rel="noreferrer">
+                        Open Sheet
+                      </a>
+                    </p>
+                  )}
+                  {result?.error && <p className="error">{result.error}</p>}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+
+      <section>
+        <h3>Past Exports</h3>
+        {pastError && <p className="error">{pastError}</p>}
+        {pastExports.length === 0 ? (
+          <p>No Sheets exports yet.</p>
+        ) : (
+          <ul className="list">
+            {pastExports.map((ex) => (
+              <li key={ex.id}>
+                <strong>{ex.team_name} vs {ex.opponent || 'TBD'}</strong> · {ex.status} ·{' '}
+                {new Date(ex.created_at).toLocaleString()} ·{' '}
+                <a href={ex.sheet_url} target="_blank" rel="noreferrer">
+                  Open Sheet
+                </a>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </>
   );
 }
 
