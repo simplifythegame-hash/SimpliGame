@@ -216,6 +216,86 @@ export function requireOwner(
   next();
 }
 
+/**
+ * Per-role write permissions. One helper for every write endpoint —
+ * handlers never write their own ad-hoc role checks.
+ *
+ * Rank: owner (4) > head_coach (3) > assistant (2) > stat_crew (1).
+ * Each action names the minimum role that may perform it; higher roles
+ * inherit it. Team scoping is separate (canAccessTeam / getOrgGame):
+ * the role check runs first (403), then the team check (404 for an
+ * unassigned team). A 403 never reveals whether the resource exists,
+ * because it is returned without looking the resource up.
+ *
+ * - stat_crew: tag stats + undo + view only.
+ * - assistant: + subs, Go Live / End Game, analysis verify/unverify.
+ * - head_coach: + game creation, roster changes, publish/unpublish,
+ *   exports, profile edits, reels, family-notify sends, YouTube attach,
+ *   enroll-token generation, family-contact removal.
+ * - owner: everything, + coach management, org rename, team creation.
+ */
+export type PermissionAction =
+  | 'tag_stats'
+  | 'sub'
+  | 'game_status'
+  | 'analysis_review'
+  | 'game_create'
+  | 'roster'
+  | 'publish'
+  | 'export'
+  | 'profile_edit'
+  | 'reels'
+  | 'family_notify'
+  | 'youtube'
+  | 'enroll'
+  | 'family_manage'
+  | 'coach_manage'
+  | 'org'
+  | 'team_create';
+
+const ROLE_RANK: Record<CoachRole, number> = {
+  owner: 4,
+  head_coach: 3,
+  assistant: 2,
+  stat_crew: 1,
+};
+
+const MIN_ROLE: Record<PermissionAction, CoachRole> = {
+  tag_stats: 'stat_crew',
+  sub: 'assistant',
+  game_status: 'assistant',
+  analysis_review: 'assistant',
+  game_create: 'head_coach',
+  roster: 'head_coach',
+  publish: 'head_coach',
+  export: 'head_coach',
+  profile_edit: 'head_coach',
+  reels: 'head_coach',
+  family_notify: 'head_coach',
+  youtube: 'head_coach',
+  enroll: 'head_coach',
+  family_manage: 'head_coach',
+  coach_manage: 'owner',
+  org: 'owner',
+  team_create: 'owner',
+};
+
+export function can(role: CoachRole, action: PermissionAction): boolean {
+  return ROLE_RANK[role] >= ROLE_RANK[MIN_ROLE[action]];
+}
+
+/** Middleware: 403 when the signed-in role may not perform `action`. */
+export function requirePermission(action: PermissionAction) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction): void => {
+    const role = req.auth?.user.role;
+    if (!role || !can(role, action)) {
+      res.status(403).json({ ok: false, error: 'Your role does not allow this action.' });
+      return;
+    }
+    next();
+  };
+}
+
 /** The authenticated user, or throws — the /api gate guarantees auth on protected routes. */
 export function authOf(req: express.Request): AuthContext {
   if (!req.auth) throw new Error('Request is not authenticated.');
