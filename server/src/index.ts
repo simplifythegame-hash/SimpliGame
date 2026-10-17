@@ -2319,6 +2319,29 @@ app.get(
   }),
 );
 
+// All Sheets exports across the org's games, newest first — the
+// Export Center's Past Exports list. Team-scoped for non-owners:
+// coaches see only exports for their assigned teams' games.
+app.get(
+  '/api/exports',
+  requirePermission('export'),
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const auth = authOf(req);
+    const teamIds = auth.teamIds;
+    const rows = await db.query(
+      `SELECT se.*, g.opponent, g.status, g.our_score, g.opponent_score, t.name AS team_name
+       FROM sheet_exports se
+       JOIN games g ON g.id = se.game_id
+       JOIN teams t ON t.id = g.team_id
+       WHERE t.org_id = $1${teamIds ? ' AND t.id = ANY($2)' : ''}
+       ORDER BY se.created_at DESC`,
+      teamIds ? [auth.user.org_id, teamIds] : [auth.user.org_id],
+    );
+    res.json({ ok: true, exports: rows.rows });
+  }),
+);
+
 // ------------------------------------------- assisted post-game analysis
 // Rule-based overview + human sign-off. The overview is recomputed from
 // the game's real events on every read (never stored, never AI, never
