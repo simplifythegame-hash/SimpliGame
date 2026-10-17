@@ -31,13 +31,20 @@ export function getPool(): Pool {
 }
 
 /**
- * The v1 single-owner organization. All data belongs to this one org.
- * Creates a default org on first use so a fresh database just works.
- * When multi-org auth lands, this must be replaced by "the caller's org"
- * and every query must scope by it — see README.
+ * The caller's organization.
+ *
+ * With an orgId (the authenticated user's org): returns that org, or
+ * throws when it doesn't exist — never silently serves another org.
+ * Without one (one-time setup only): the legacy v1 behavior — first org,
+ * or a default org created on first use.
  */
-export async function getOrCreateOrganization() {
+export async function getOrCreateOrganization(orgId?: string) {
   const db = getPool();
+  if (orgId !== undefined) {
+    const row = await db.query('SELECT * FROM organizations WHERE id = $1', [orgId]);
+    if (row.rows.length === 0) throw new Error('Organization not found.');
+    return row.rows[0];
+  }
   const existing = await db.query('SELECT * FROM organizations ORDER BY created_at ASC LIMIT 1');
   if (existing.rows.length > 0) return existing.rows[0];
   const created = await db.query(
