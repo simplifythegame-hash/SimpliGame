@@ -124,6 +124,15 @@ npm run dev --workspace=@simpligame/client   # http://localhost:5173
   manages coaches; a coach sees only their assigned teams — enforced
   server-side on every query, so a guessed ID still 404s. Public watch /
   profile / enroll links stay public (token-only, no login).
+- Sidebar navigation (prototype tabs): **HOME** (org overview — teams,
+  live / upcoming / recent games, quick links), **Live** (games list +
+  New Game + entry into live tagging), **Team** (all rosters, per-team
+  roster management + that team's games), **Player Management**
+  (head_coach+; every player across teams, opening the full recruiting
+  profile), **Highlight Builder** (head_coach+; Auto Reel automated
+  builds + reel library + Reel Studio), **Coaches** (owner only).
+  Game Detail stays reachable from Live or Team; the sidebar collapses
+  to a horizontal tab row on phones.
 
 ## Coach logins
 
