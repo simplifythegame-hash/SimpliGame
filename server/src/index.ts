@@ -1468,8 +1468,10 @@ app.get(
     const game = await db.query(
       `SELECT g.id, g.opponent, g.sport, g.mode, g.status, g.period_label,
               g.our_score, g.opponent_score, g.youtube_video_id,
-              t.name AS team_name
+              t.name AS team_name,
+              o.primary_color, o.secondary_color
        FROM games g JOIN teams t ON t.id = g.team_id
+       JOIN organizations o ON o.id = t.org_id
        WHERE g.publish_token = $1 AND g.published = true`,
       [req.params.token],
     );
@@ -1522,6 +1524,10 @@ app.get(
         youtube_video_id: g.youtube_video_id,
         events: events.rows,
         boxScore: [...boxByName.values()],
+        // Org brand colors: the public Watch page wears the club's
+        // colors (Llamas blue), not the SimpliGame shell palette.
+        primary_color: g.primary_color,
+        secondary_color: g.secondary_color,
       },
     });
   }),
@@ -1539,10 +1545,12 @@ app.get(
   asyncHandler(async (req, res) => {
     const db = getPool();
     const row = await db.query(
-      `SELECT p.id, p.name, p.jersey_number, p.position, t.name AS team_name
+      `SELECT p.id, p.name, p.jersey_number, p.position, t.name AS team_name,
+              o.primary_color, o.secondary_color
        FROM player_profiles pp
        JOIN players p ON p.id = pp.player_id
        JOIN teams t ON t.id = p.team_id
+       JOIN organizations o ON o.id = t.org_id
        WHERE pp.profile_token = $1 AND pp.profile_published = true`,
       [req.params.token],
     );
@@ -1568,6 +1576,10 @@ app.get(
         school: prof.school,
         club_team: prof.club_team,
         stats,
+        // Org brand colors: the public Profile page wears the club's
+        // colors (Llamas blue), not the SimpliGame shell palette.
+        primary_color: player.primary_color,
+        secondary_color: player.secondary_color,
       },
     });
   }),
@@ -2550,7 +2562,7 @@ app.get('/privacy', (_req, res) => {
 <html lang="en"><head><meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>SimpliGame — Privacy Policy</title>
-<style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:760px;margin:40px auto;padding:0 20px;line-height:1.6;color:#1a1a1a}h1{font-size:28px}h2{font-size:19px;margin-top:28px}a{color:#048DF1}</style>
+<style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:760px;margin:40px auto;padding:0 20px;line-height:1.6;color:#1a1a1a}h1{font-size:28px}h2{font-size:19px;margin-top:28px}a{color:#16408F}</style>
 </head><body>
 <h1>SimpliGame Privacy Policy</h1>
 <p><strong>Effective date:</strong> October 17, 2026</p>
