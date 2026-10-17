@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from './api';
-import type { EnrollInfo, FamilyContact, Game, GameAnalysis, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Workspace } from './types';
+import type { AuthUser, Coach, EnrollInfo, FamilyContact, Game, GameAnalysis, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Workspace } from './types';
 import YouTubePlayer from './components/YouTubePlayer';
 import './styles.css';
 
@@ -17,7 +17,7 @@ const STAT_BUTTONS: { label: string; points: number }[] = [
   { label: 'Error', points: 0 },
 ];
 
-type View = { kind: 'home' } | { kind: 'live'; gameId: string } | { kind: 'detail'; gameId: string } | { kind: 'profile'; playerId: string } | { kind: 'reels' } | { kind: 'reel'; reelId: string };
+type View = { kind: 'home' } | { kind: 'live'; gameId: string } | { kind: 'detail'; gameId: string } | { kind: 'profile'; playerId: string } | { kind: 'reels' } | { kind: 'reel'; reelId: string } | { kind: 'coaches' };
 
 export default function App() {
   // Public routes render standalone pages INSTEAD of the app shell — no
@@ -46,6 +46,11 @@ export default function App() {
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
   const [error, setError] = useState<string>('');
   const [loading, setLoading] = useState(true);
+  // Auth: null = not logged in (login/setup screen). The server enforces
+  // everything — the client only renders what the server returns.
+  const [me, setMe] = useState<AuthUser | null>(null);
+  const [needsSetup, setNeedsSetup] = useState(false);
+  const [authError, setAuthError] = useState('');
 
   const [teamName, setTeamName] = useState('');
   const [playerName, setPlayerName] = useState('');
@@ -79,16 +84,41 @@ export default function App() {
   }, []);
 
   const refresh = useCallback(async () => {
-    const ws = await api.getWorkspace();
-    setWorkspace(ws);
-    setLoading(false);
+    try {
+      const ws = await api.getWorkspace();
+      setWorkspace(ws);
+      setLoading(false);
+    } catch (e) {
+      // Session expired mid-use → back to the login screen.
+      if (e instanceof Error && e.message === 'Please log in.') {
+        setMe(null);
+        setLoading(false);
+        return;
+      }
+      throw e;
+    }
   }, []);
 
+  // Auth bootstrap: check the session first; a logged-in user loads the
+  // workspace, everyone else gets the login screen (or the one-time
+  // setup form when zero users exist).
   useEffect(() => {
-    refresh().catch((e) => {
-      setError(e instanceof Error ? e.message : 'Failed to load workspace');
-      setLoading(false);
-    });
+    api
+      .getMe()
+      .then(async (meResult) => {
+        if (meResult.user) {
+          setMe(meResult.user);
+          await refresh();
+        } else {
+          const status = await api.getAuthStatus();
+          setNeedsSetup(!status.usersExist);
+          setLoading(false);
+        }
+      })
+      .catch((e) => {
+        setAuthError(e instanceof Error ? e.message : 'Failed to check login');
+        setLoading(false);
+      });
   }, [refresh]);
 
   const selectedTeam = workspace?.teams.find((t) => t.id === selectedTeamId);
@@ -178,9 +208,30 @@ export default function App() {
   }
 
   if (loading) return <div className="page"><p>Loading SimpliGame…</p></div>;
+  if (authError) return <div className="page"><p className="error">{authError}</p></div>;
+  if (!me) {
+    const onDone = (user: AuthUser) => {
+      setMe(user);
+      setLoading(true);
+      void refresh();
+    };
+    return needsSetup ? <SetupScreen onDone={onDone} /> : <LoginScreen onDone={onDone} />;
+  }
   if (!workspace) return <div className="page"><p className="error">{error || 'Could not load workspace.'}</p></div>;
 
   const org = workspace.organization;
+
+  async function handleLogout() {
+    try {
+      await api.logout();
+    } catch {
+      // Already logged out server-side — clear local state anyway.
+    }
+    setMe(null);
+    setWorkspace(null);
+    setView({ kind: 'home' });
+    setSelectedTeamId('');
+  }
 
   return (
     <div className="page" style={{ ['--brand' as string]: org.primary_color, ['--brand2' as string]: org.secondary_color }}>
@@ -212,19 +263,27 @@ export default function App() {
         ) : (
           <h1>
             {org.name}{' '}
-            <button
-              className="org-edit-btn"
-              aria-label="Rename organization"
-              onClick={() => {
-                setOrgName(org.name);
-                setEditingOrg(true);
-              }}
-            >
-              ✏️
-            </button>
+            {me.role === 'owner' && (
+              <button
+                className="org-edit-btn"
+                aria-label="Rename organization"
+                onClick={() => {
+                  setOrgName(org.name);
+                  setEditingOrg(true);
+                }}
+              >
+                ✏️
+              </button>
+            )}
           </h1>
         )}
         <p className="tagline">SimpliGame — Simplify the Game</p>
+        <p className="sub-hint">
+          Signed in as {me.name} ({me.role.replace('_', ' ')}){' '}
+          <button type="button" onClick={handleLogout}>
+            Logout
+          </button>
+        </p>
       </header>
 
       {error && <p className="error">{error}</p>}
@@ -251,16 +310,23 @@ export default function App() {
         >
           Reels
         </button>
+        {me.role === 'owner' && (
+          <button className={view.kind === 'coaches' ? 'selected' : ''} onClick={() => setView({ kind: 'coaches' })}>
+            Coaches
+          </button>
+        )}
       </nav>
 
       {view.kind === 'home' && (
         <>
           <section>
             <h2>Teams</h2>
-            <form onSubmit={handleCreateTeam} className="row">
-              <input value={teamName} onChange={(e) => setTeamName(e.target.value)} placeholder="New team name" required />
-              <button type="submit">Create team</button>
-            </form>
+            {me.role === 'owner' && (
+              <form onSubmit={handleCreateTeam} className="row">
+                <input value={teamName} onChange={(e) => setTeamName(e.target.value)} placeholder="New team name" required />
+                <button type="submit">Create team</button>
+              </form>
+            )}
             <ul className="list">
               {workspace.teams.map((t) => (
                 <li key={t.id}>
@@ -406,7 +472,275 @@ export default function App() {
           onBack={() => setView({ kind: 'home' })}
         />
       )}
+
+      {view.kind === 'coaches' && me.role === 'owner' && (
+        <CoachesScreen teams={workspace.teams} onBack={() => setView({ kind: 'home' })} />
+      )}
     </div>
+  );
+}
+
+/** Login screen: shown when no session exists and users already exist. */
+function LoginScreen({ onDone }: { onDone: (user: AuthUser) => void }) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  return (
+    <div className="page">
+      <h1>SimpliGame</h1>
+      <p className="tagline">Simplify the Game</p>
+      <section>
+        <h2>Log in</h2>
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            setError('');
+            setBusy(true);
+            try {
+              const user = await api.login(email, password);
+              onDone(user);
+            } catch (err) {
+              setError(err instanceof Error ? err.message : 'Login failed.');
+              setBusy(false);
+            }
+          }}
+        >
+          <div className="row">
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" required autoFocus />
+          </div>
+          <div className="row">
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" required />
+          </div>
+          {error && <p className="error">{error}</p>}
+          <button type="submit" disabled={busy}>{busy ? 'Logging in…' : 'Log in'}</button>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+/** One-time owner setup: shown only when zero users exist. Creates the
+ *  owner account and logs in immediately. After the first user exists
+ *  the server refuses this endpoint. */
+function SetupScreen({ onDone }: { onDone: (user: AuthUser) => void }) {
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  return (
+    <div className="page">
+      <h1>SimpliGame</h1>
+      <p className="tagline">Simplify the Game</p>
+      <section>
+        <h2>Set up the owner account</h2>
+        <p className="sub-hint">
+          This is a one-time setup. Create the owner login for your organization — choose a
+          password of at least 8 characters.
+        </p>
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            setError('');
+            setBusy(true);
+            try {
+              const user = await api.setup(name, email, password);
+              onDone(user);
+            } catch (err) {
+              setError(err instanceof Error ? err.message : 'Setup failed.');
+              setBusy(false);
+            }
+          }}
+        >
+          <div className="row">
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" required maxLength={100} autoFocus />
+          </div>
+          <div className="row">
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" required />
+          </div>
+          <div className="row">
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password (8+ characters)" required />
+          </div>
+          {error && <p className="error">{error}</p>}
+          <button type="submit" disabled={busy}>{busy ? 'Creating…' : 'Create owner account'}</button>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+/** Owner-only coach management: add coaches with a role + team
+ *  assignments, change a coach's role/teams, remove a coach. */
+function CoachesScreen({ teams, onBack }: { teams: { id: string; name: string }[]; onBack: () => void }) {
+  const [coaches, setCoaches] = useState<Coach[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [role, setRole] = useState('assistant');
+  const [newTeamIds, setNewTeamIds] = useState<string[]>([]);
+  const [editState, setEditState] = useState<Record<string, { role: string; teamIds: string[] }>>({});
+
+  const load = useCallback(async () => {
+    try {
+      setCoaches(await api.listCoaches());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load coaches');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  function toggleTeam(list: string[], teamId: string) {
+    return list.includes(teamId) ? list.filter((t) => t !== teamId) : [...list, teamId];
+  }
+
+  async function handleAdd(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    try {
+      await api.createCoach({ name, email, password, role, teamIds: newTeamIds });
+      setName('');
+      setEmail('');
+      setPassword('');
+      setNewTeamIds([]);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add coach');
+    }
+  }
+
+  async function handleSave(coach: Coach) {
+    setError('');
+    const edit = editState[coach.id];
+    if (!edit) return;
+    try {
+      await api.updateCoach(coach.id, { role: edit.role, teamIds: edit.teamIds });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save coach');
+    }
+  }
+
+  async function handleRemove(coach: Coach) {
+    if (!window.confirm(`Remove ${coach.name} (${coach.email})? They will no longer be able to log in.`)) return;
+    setError('');
+    try {
+      await api.deleteCoach(coach.id);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to remove coach');
+    }
+  }
+
+  function startEdit(coach: Coach) {
+    setEditState((prev) => ({ ...prev, [coach.id]: { role: coach.role, teamIds: [...coach.teamIds] } }));
+  }
+
+  if (loading) return <p>Loading coaches…</p>;
+  return (
+    <section>
+      <h2>Coaches</h2>
+      <button type="button" onClick={onBack}>Back</button>
+      {error && <p className="error">{error}</p>}
+      <h3>Add a coach</h3>
+      <p className="sub-hint">A coach sees only the teams you check. The owner sees everything.</p>
+      <form onSubmit={handleAdd}>
+        <div className="row">
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" required maxLength={100} />
+          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" required />
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password (8+ characters)" required />
+        </div>
+        <div className="row">
+          <label className="field-label">
+            Role
+            <select value={role} onChange={(e) => setRole(e.target.value)}>
+              <option value="head_coach">Head coach</option>
+              <option value="assistant">Assistant</option>
+              <option value="stat_crew">Stat crew</option>
+            </select>
+          </label>
+        </div>
+        <div className="row">
+          {teams.map((t) => (
+            <label key={t.id} className="field-label">
+              <input
+                type="checkbox"
+                checked={newTeamIds.includes(t.id)}
+                onChange={() => setNewTeamIds((prev) => toggleTeam(prev, t.id))}
+              />
+              {t.name}
+            </label>
+          ))}
+        </div>
+        <button type="submit">Add coach</button>
+      </form>
+      <ul className="list">
+        {coaches.map((c) => {
+          const edit = editState[c.id];
+          const teamNames = teams.filter((t) => c.teamIds.includes(t.id)).map((t) => t.name);
+          return (
+            <li key={c.id}>
+              <strong>{c.name}</strong> — {c.email} — {c.role.replace('_', ' ')}
+              {c.role === 'owner' ? (
+                <span> (owner — sees all teams)</span>
+              ) : (
+                <>
+                  <span> — Teams: {teamNames.length > 0 ? teamNames.join(', ') : 'none'}</span>{' '}
+                  {edit ? (
+                    <>
+                      <div className="row">
+                        <select value={edit.role} onChange={(e) => setEditState((prev) => ({ ...prev, [c.id]: { ...edit, role: e.target.value } }))}>
+                          <option value="head_coach">Head coach</option>
+                          <option value="assistant">Assistant</option>
+                          <option value="stat_crew">Stat crew</option>
+                        </select>
+                      </div>
+                      <div className="row">
+                        {teams.map((t) => (
+                          <label key={t.id} className="field-label">
+                            <input
+                              type="checkbox"
+                              checked={edit.teamIds.includes(t.id)}
+                              onChange={() =>
+                                setEditState((prev) => ({
+                                  ...prev,
+                                  [c.id]: { ...edit, teamIds: toggleTeam(edit.teamIds, t.id) },
+                                }))
+                              }
+                            />
+                            {t.name}
+                          </label>
+                        ))}
+                      </div>
+                      <button type="button" onClick={() => void handleSave(c)}>Save</button>{' '}
+                      <button type="button" onClick={() => setEditState((prev) => {
+                        const next = { ...prev };
+                        delete next[c.id];
+                        return next;
+                      })}>
+                        Cancel
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button type="button" onClick={() => startEdit(c)}>Edit</button>{' '}
+                      <button type="button" onClick={() => void handleRemove(c)}>Remove</button>
+                    </>
+                  )}
+                </>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
 
