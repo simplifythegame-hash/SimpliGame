@@ -377,6 +377,26 @@ input.wide {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand, #0A1F44) 30%, transparent);
 }
 
+/* Stat hint: shown above the always-visible stat buttons when no
+   player is selected. Cards flash an orange outline so the coach
+   knows to pick a player. */
+.stat-hint {
+  color: var(--accent-dark, #E55A00);
+  font-weight: 700;
+}
+
+.cards-need-player .card {
+  outline: 2px solid var(--accent, #FF6B1A);
+  outline-offset: 2px;
+  animation: card-nudge 0.9s ease-in-out 2;
+}
+
+@keyframes card-nudge {
+  0%, 100% { transform: translateY(0); }
+  25% { transform: translateY(-3px); }
+  75% { transform: translateY(3px); }
+}
+
 .clip-row {
   background: var(--surface);
   border: 1px solid var(--line);
