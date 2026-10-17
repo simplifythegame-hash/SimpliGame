@@ -1,15 +1,23 @@
 /* SimpliGame design system.
  *
- * Built on the organization's brand colors: --brand / --brand2 are set
- * inline from the org record (default Llamas blue #04BEF1 / #048DF1), so
- * rebranding the org re-skins the whole app. --gold is the Vegas gold
- * accent from the SG lettermark. Pure visual layer — no class names here
- * carry behavior; every screen keeps working exactly as before.
+ * App shell uses SimpliGame's own fixed palette — deep blue + orange —
+ * so the app reads as SimpliGame, not as any one club. The org's colors
+ * apply ONLY to the org's public face (public Watch + Profile pages),
+ * which set --brand / --brand2 inline from the org record. --gold is
+ * the Vegas gold accent from the SG lettermark. Pure visual layer —
+ * no class names here carry behavior; every screen keeps working
+ * exactly as before.
  */
 
 :root {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   color: #1c2733;
+  /* SimpliGame palette: deep blue shell, orange action accent. */
+  --brand: #0b2a6b;
+  --brand2: #16408f;
+  --brand-deep: #071e4e;
+  --accent: #ff6b1a;
+  --accent-dark: #e55a00;
   --gold: #b4975a;
   --ink: #1c2733;
   --muted: #5b6b7a;
@@ -27,7 +35,7 @@ body {
 }
 
 a {
-  color: var(--brand2, #048df1);
+  color: var(--brand2, #16408F);
 }
 
 .page {
@@ -39,7 +47,7 @@ a {
 /* ---- Header: brand gradient, SG mark + org name ---- */
 
 .org-header {
-  background: linear-gradient(100deg, var(--brand, #04bef1), var(--brand2, #048df1));
+  background: linear-gradient(100deg, var(--brand, #0B2A6B), var(--brand2, #16408F));
   color: #fff;
   padding: 1.25rem 1.5rem;
   border-radius: 16px;
@@ -128,13 +136,13 @@ h2 {
   font-size: 1.25rem;
   margin: 1.5rem 0 0.5rem;
   padding-bottom: 0.4rem;
-  border-bottom: 2px solid var(--brand, #04bef1);
+  border-bottom: 2px solid var(--brand, #0B2A6B);
 }
 
 h3 {
   font-size: 1.05rem;
   margin: 1.25rem 0 0.5rem;
-  color: var(--brand2, #048df1);
+  color: var(--brand2, #16408F);
 }
 
 .sub-hint {
@@ -188,10 +196,10 @@ h3 {
 }
 
 .side-nav button.selected {
-  background: var(--brand, #04bef1);
+  background: var(--brand, #0B2A6B);
   color: #fff;
   border-color: transparent;
-  box-shadow: 0 2px 8px rgba(4, 141, 241, 0.35);
+  box-shadow: 0 2px 8px rgba(11, 42, 107, 0.35);
 }
 
 /* ---- Buttons & inputs ---- */
@@ -209,8 +217,8 @@ button {
 }
 
 button:hover:not(:disabled) {
-  border-color: var(--brand, #04bef1);
-  box-shadow: 0 1px 4px rgba(4, 141, 241, 0.18);
+  border-color: var(--brand, #0B2A6B);
+  box-shadow: 0 1px 4px rgba(11, 42, 107, 0.18);
 }
 
 button:disabled {
@@ -219,21 +227,23 @@ button:disabled {
 }
 
 button.selected {
-  background: var(--brand, #04bef1);
+  background: var(--brand, #0B2A6B);
   color: #fff;
-  border-color: var(--brand, #04bef1);
+  border-color: var(--brand, #0B2A6B);
 }
 
-/* Primary actions (form submits: create, save, log in, verify, export…). */
+/* Primary actions (form submits: create, save, log in, verify, export…).
+ * Orange accent — the action color on the deep-blue shell. */
 button[type="submit"] {
-  background: var(--brand2, #048df1);
-  border-color: var(--brand2, #048df1);
+  background: var(--accent);
+  border-color: var(--accent);
   color: #fff;
   font-weight: 600;
 }
 
 button[type="submit"]:hover:not(:disabled) {
-  filter: brightness(1.07);
+  background: var(--accent-dark);
+  border-color: var(--accent-dark);
 }
 
 input,
@@ -252,8 +262,8 @@ input:focus,
 select:focus,
 textarea:focus {
   outline: none;
-  border-color: var(--brand, #04bef1);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand, #04bef1) 22%, transparent);
+  border-color: var(--brand, #0B2A6B);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand, #0B2A6B) 22%, transparent);
 }
 
 .field-label {
@@ -342,8 +352,8 @@ input.wide {
 }
 
 .cards button.selected {
-  border-color: var(--brand, #04bef1);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand, #04bef1) 30%, transparent);
+  border-color: var(--brand, #0B2A6B);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand, #0B2A6B) 30%, transparent);
 }
 
 .clip-row {
@@ -361,7 +371,7 @@ input.wide {
   font-size: 2rem;
   font-weight: 800;
   letter-spacing: -0.01em;
-  color: var(--brand2, #048df1);
+  color: var(--brand2, #16408F);
 }
 
 .boxscore {
@@ -375,7 +385,7 @@ input.wide {
 }
 
 .boxscore th {
-  background: color-mix(in srgb, var(--brand, #04bef1) 12%, #ffffff);
+  background: color-mix(in srgb, var(--brand, #0B2A6B) 12%, #ffffff);
   color: var(--ink);
   font-weight: 700;
 }
@@ -449,7 +459,7 @@ input.wide {
   border-radius: var(--radius);
   overflow: hidden;
   box-shadow: var(--shadow);
-  background: linear-gradient(120deg, var(--brand, #04bef1), var(--brand2, #048df1));
+  background: linear-gradient(120deg, var(--brand, #0B2A6B), var(--brand2, #16408F));
   color: #fff;
   display: flex;
   flex-direction: column;
