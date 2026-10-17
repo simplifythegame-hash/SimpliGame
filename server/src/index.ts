@@ -236,6 +236,74 @@ app.get(
   }),
 );
 
+// Self-service change-password: any logged-in user. Verifies the
+// current password, sets the new hash, and invalidates all of the
+// user's OTHER sessions (the current session stays alive).
+app.post(
+  '/api/auth/change-password',
+  asyncHandler(async (req, res) => {
+    if (req.authUnavailable) {
+      res.status(503).json({ ok: false, error: AUTH_MIGRATION_MESSAGE });
+      return;
+    }
+    if (!req.auth) {
+      res.status(401).json({ ok: false, error: 'Not logged in.' });
+      return;
+    }
+    const { currentPassword, newPassword } = req.body ?? {};
+    if (typeof currentPassword !== 'string' || currentPassword.length === 0) {
+      res.status(400).json({ ok: false, error: 'Current password is required.' });
+      return;
+    }
+    const cleanNew = cleanPassword(newPassword);
+    if (!cleanNew) {
+      res.status(400).json({ ok: false, error: 'New password must be at least 8 characters.' });
+      return;
+    }
+    const db = getPool();
+    try {
+      const row = await db.query('SELECT password_hash FROM users WHERE id = $1', [req.auth.user.id]);
+      if (row.rows.length === 0 || !verifyPassword(currentPassword, row.rows[0].password_hash as string)) {
+        res.status(401).json({ ok: false, error: 'Current password is incorrect.' });
+        return;
+      }
+      // Keep the current session alive; invalidate every other session.
+      const cookie = req.headers.cookie ?? '';
+      const match = cookie.match(/(?:^|;\s*)sg_session=([^;]+)/);
+      const currentHash = match ? hashSessionToken(match[1]) : null;
+      const client = await db.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query('UPDATE users SET password_hash = $1 WHERE id = $2', [
+          hashPassword(cleanNew),
+          req.auth.user.id,
+        ]);
+        if (currentHash) {
+          await client.query('DELETE FROM sessions WHERE user_id = $1 AND token_hash <> $2', [
+            req.auth.user.id,
+            currentHash,
+          ]);
+        } else {
+          await client.query('DELETE FROM sessions WHERE user_id = $1', [req.auth.user.id]);
+        }
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+      res.json({ ok: true, changed: true });
+    } catch (err) {
+      if (isMissingTable(err)) {
+        res.status(503).json({ ok: false, error: AUTH_MIGRATION_MESSAGE });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
 // --------------------------------------------------------------- coaches
 // Owner-only coach management. Responses never include password_hash.
 // Coaches get a role + team assignments; they see only their teams.
@@ -449,6 +517,51 @@ app.delete(
     // Sessions + team assignments cascade off the user row.
     await db.query('DELETE FROM users WHERE id = $1', [targetId]);
     res.json({ ok: true, deleted: true });
+  }),
+);
+
+// Owner-only password reset for a coach. Sets the coach's password and
+// invalidates ALL of that coach's sessions (forces re-login). The owner
+// cannot reset their own password here — use change-password — and
+// cannot target the owner account.
+app.post(
+  '/api/coaches/:id/reset-password',
+  requireOwner,
+  asyncHandler(async (req, res) => {
+    const { newPassword } = req.body ?? {};
+    const cleanNew = cleanPassword(newPassword);
+    if (!cleanNew) {
+      res.status(400).json({ ok: false, error: 'New password must be at least 8 characters.' });
+      return;
+    }
+    const db = getPool();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
+    const targetId = String(req.params.id);
+    const target = await db.query('SELECT * FROM users WHERE id = $1 AND org_id = $2', [targetId, org.id]);
+    if (target.rows.length === 0) {
+      res.status(404).json({ ok: false, error: 'Coach not found.' });
+      return;
+    }
+    if (target.rows[0].role === 'owner' || targetId === req.auth!.user.id) {
+      res.status(403).json({ ok: false, error: 'Use change-password for your own account.' });
+      return;
+    }
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('UPDATE users SET password_hash = $1 WHERE id = $2', [
+        hashPassword(cleanNew),
+        targetId,
+      ]);
+      await client.query('DELETE FROM sessions WHERE user_id = $1', [targetId]);
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+    res.json({ ok: true, reset: true });
   }),
 );
 
