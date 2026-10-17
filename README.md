@@ -118,6 +118,30 @@ npm run dev --workspace=@simpligame/client   # http://localhost:5173
   coach checks each section and signs it off (Verified, optionally with
   a correction/note); only Verified sections count as official. Overall
   status: unreviewed / partially verified / verified.
+- Coach logins: email + password accounts (owner, head coach, assistant,
+  stat crew). Passwords are scrypt hashes only; sessions are opaque
+  tokens in an HttpOnly cookie (30 days). The owner sees everything and
+  manages coaches; a coach sees only their assigned teams — enforced
+  server-side on every query, so a guessed ID still 404s. Public watch /
+  profile / enroll links stay public (token-only, no login).
+
+## Coach logins
+
+No env vars needed. First run migration 009, then restart.
+
+1. Open the app — with zero users it shows a one-time **setup form**.
+   Create the owner account there (name, email, password 8+ characters).
+   Setup refuses once the first user exists, so it can never be re-run
+   to hijack the org. The owner sets their own password via this form —
+   never in chat, never hardcoded.
+2. Log in with that account. The header shows the signed-in user + Logout.
+3. Owner-only **Coaches** section (nav): add a coach with a role
+   (head coach / assistant / stat crew) + team checkboxes, change a
+   coach's role/teams, remove a coach. Removing a coach deletes their
+   sessions too.
+4. Team creation and org rename are owner-only. Everything else is
+   team-scoped: coaches can tag stats, manage games, and view data only
+   for their assigned teams.
 
 ## Google Sheets export (service account)
 
