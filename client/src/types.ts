@@ -63,6 +63,38 @@ export interface LineupRow {
   slot: number;
 }
 
+/** AI Vision Phase 1: one analysis run for a finished game. The
+ *  local worker polls for pending jobs, processes the video on the
+ *  owner's own machine, and POSTs candidates back. */
+export interface AnalysisJob {
+  id: string;
+  game_id: string;
+  status: 'pending' | 'processing' | 'done' | 'failed';
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One AI-proposed event. proposed_* is the model's suggestion;
+ *  final_* records what the coach actually confirmed (null until
+ *  reviewed). A confirmed/corrected candidate becomes a normal
+ *  game_event — the candidate row itself never counts as a stat. */
+export interface AnalysisCandidate {
+  id: string;
+  job_id: string;
+  game_id: string;
+  timestamp_sec: number;
+  clip_start_sec: number;
+  clip_end_sec: number;
+  proposed_stat: string;
+  proposed_player_id: string | null;
+  confidence: number;
+  status: 'pending' | 'confirmed' | 'corrected' | 'skipped';
+  final_stat: string | null;
+  final_player_id: string | null;
+  created_at: string;
+}
+
 export interface Workspace {
   organization: Organization;
   teams: Team[];
