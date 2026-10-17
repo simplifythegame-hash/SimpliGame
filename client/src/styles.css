@@ -193,6 +193,9 @@ h3 {
   color: var(--muted);
   text-align: left;
   width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .side-nav button.selected {
@@ -234,6 +237,20 @@ button.selected {
   background: var(--brand, #0A1F44);
   color: #fff;
   border-color: var(--brand, #0A1F44);
+}
+
+/* Inline SVG icons: decorative, inherit the surrounding text color,
+ * and never change the button's size — they sit inline before the label. */
+.icon {
+  display: inline-block;
+  vertical-align: -0.125em;
+  flex-shrink: 0;
+}
+
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 /* Primary actions (form submits: create, save, log in, verify, export…).
