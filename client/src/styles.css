@@ -1,10 +1,11 @@
 /* SimpliGame design system.
  *
- * App shell uses SimpliGame's own fixed palette — deep blue + orange —
+ * App shell uses SimpliGame's own fixed palette — navy + orange —
  * so the app reads as SimpliGame, not as any one club. The org's colors
  * apply ONLY to the org's public face (public Watch + Profile pages),
- * which set --brand / --brand2 inline from the org record. --gold is
- * the Vegas gold accent from the SG lettermark. Pure visual layer —
+ * which set --brand / --brand2 inline from the org record. The SG
+ * lettermark is white with a navy outline on an orange tile. Pure
+ * visual layer —
  * no class names here carry behavior; every screen keeps working
  * exactly as before.
  */
@@ -12,13 +13,12 @@
 :root {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   color: #1c2733;
-  /* SimpliGame palette: deep blue shell, orange action accent. */
-  --brand: #0b2a6b;
-  --brand2: #16408f;
-  --brand-deep: #071e4e;
+  /* SimpliGame palette: navy shell, orange action accent. */
+  --brand: #0a1f44;
+  --brand2: #1b3560;
+  --brand-deep: #06122b;
   --accent: #ff6b1a;
   --accent-dark: #e55a00;
-  --gold: #b4975a;
   --ink: #1c2733;
   --muted: #5b6b7a;
   --line: #e3e9ef;
@@ -35,7 +35,7 @@ body {
 }
 
 a {
-  color: var(--brand2, #16408F);
+  color: var(--brand2, #1B3560);
 }
 
 .page {
@@ -47,7 +47,7 @@ a {
 /* ---- Header: brand gradient, SG mark + org name ---- */
 
 .org-header {
-  background: linear-gradient(100deg, var(--brand, #0B2A6B), var(--brand2, #16408F));
+  background: linear-gradient(100deg, var(--brand, #0A1F44), var(--brand2, #1B3560));
   color: #fff;
   padding: 1.25rem 1.5rem;
   border-radius: 16px;
@@ -136,13 +136,13 @@ h2 {
   font-size: 1.25rem;
   margin: 1.5rem 0 0.5rem;
   padding-bottom: 0.4rem;
-  border-bottom: 2px solid var(--brand, #0B2A6B);
+  border-bottom: 2px solid var(--brand, #0A1F44);
 }
 
 h3 {
   font-size: 1.05rem;
   margin: 1.25rem 0 0.5rem;
-  color: var(--brand2, #16408F);
+  color: var(--brand2, #1B3560);
 }
 
 .sub-hint {
@@ -196,7 +196,7 @@ h3 {
 }
 
 .side-nav button.selected {
-  background: var(--brand, #0B2A6B);
+  background: var(--brand, #0A1F44);
   color: #fff;
   border-color: transparent;
   box-shadow: 0 2px 8px rgba(11, 42, 107, 0.35);
@@ -217,7 +217,7 @@ button {
 }
 
 button:hover:not(:disabled) {
-  border-color: var(--brand, #0B2A6B);
+  border-color: var(--brand, #0A1F44);
   box-shadow: 0 1px 4px rgba(11, 42, 107, 0.18);
 }
 
@@ -227,9 +227,9 @@ button:disabled {
 }
 
 button.selected {
-  background: var(--brand, #0B2A6B);
+  background: var(--brand, #0A1F44);
   color: #fff;
-  border-color: var(--brand, #0B2A6B);
+  border-color: var(--brand, #0A1F44);
 }
 
 /* Primary actions (form submits: create, save, log in, verify, export…).
@@ -262,8 +262,8 @@ input:focus,
 select:focus,
 textarea:focus {
   outline: none;
-  border-color: var(--brand, #0B2A6B);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand, #0B2A6B) 22%, transparent);
+  border-color: var(--brand, #0A1F44);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand, #0A1F44) 22%, transparent);
 }
 
 .field-label {
@@ -352,8 +352,8 @@ input.wide {
 }
 
 .cards button.selected {
-  border-color: var(--brand, #0B2A6B);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand, #0B2A6B) 30%, transparent);
+  border-color: var(--brand, #0A1F44);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand, #0A1F44) 30%, transparent);
 }
 
 .clip-row {
@@ -371,7 +371,7 @@ input.wide {
   font-size: 2rem;
   font-weight: 800;
   letter-spacing: -0.01em;
-  color: var(--brand2, #16408F);
+  color: var(--brand2, #1B3560);
 }
 
 .boxscore {
@@ -385,7 +385,7 @@ input.wide {
 }
 
 .boxscore th {
-  background: color-mix(in srgb, var(--brand, #0B2A6B) 12%, #ffffff);
+  background: color-mix(in srgb, var(--brand, #0A1F44) 12%, #ffffff);
   color: var(--ink);
   font-weight: 700;
 }
@@ -459,7 +459,7 @@ input.wide {
   border-radius: var(--radius);
   overflow: hidden;
   box-shadow: var(--shadow);
-  background: linear-gradient(120deg, var(--brand, #0B2A6B), var(--brand2, #16408F));
+  background: linear-gradient(120deg, var(--brand, #0A1F44), var(--brand2, #1B3560));
   color: #fff;
   display: flex;
   flex-direction: column;
