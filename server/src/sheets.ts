@@ -1,19 +1,25 @@
-import crypto from 'crypto';
 import https from 'https';
 
 // Google Sheets export via direct fetch to the Sheets + Drive APIs —
-// no SDK. Auth is a service-account JWT (RS256, signed with Node
-// crypto) exchanged for an access token at Google's OAuth endpoint.
+// no SDK. Auth is OAuth 2.0 user auth: a refresh token (obtained once
+// via the OAuth consent flow) is exchanged for a fresh access token on
+// every export. The app acts as the coach's Google account, so Sheets
+// land in their Drive.
+//
+// (Service-account auth was tried first and does not work for file
+// creation: Google returns 403 PERMISSION_DENIED on
+// spreadsheets.create and "storage quota exceeded" on Drive create for
+// service accounts in this setup.)
 //
 // Env vars:
-//   GOOGLE_SERVICE_ACCOUNT_EMAIL       (service account email)
-//   GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY (PEM private key; the \\n escapes
-//     in the env value are converted to real newlines before signing)
+//   GOOGLE_OAUTH_CLIENT_ID     (OAuth client ID)
+//   GOOGLE_OAUTH_CLIENT_SECRET (OAuth client secret)
+//   GOOGLE_OAUTH_REFRESH_TOKEN (refresh token from the one-time consent)
 //   GOOGLE_SHARE_EMAIL (optional) — if set, the Sheet is shared with
 //     this email as a writer; otherwise it is set to anyone-with-link
 //     reader, and the coach shares it from Google Drive.
 //
-// If either credential env var is missing, the app reports
+// If any credential env var is missing, the app reports
 // not-configured — no HTTP call is made and no fake URL is ever
 // returned. Same honest pattern as the Twilio log-only mode.
 
@@ -23,61 +29,30 @@ export type SheetsExportResult =
   | { mode: 'failed'; error: string };
 
 export function isSheetsConfigured(): boolean {
-  return Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL && process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY);
+  return Boolean(
+    process.env.GOOGLE_OAUTH_CLIENT_ID &&
+      process.env.GOOGLE_OAUTH_CLIENT_SECRET &&
+      process.env.GOOGLE_OAUTH_REFRESH_TOKEN,
+  );
 }
 
-function base64Url(input: Buffer | string): string {
-  const buf = typeof input === 'string' ? Buffer.from(input) : input;
-  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-// Build + sign the service-account JWT (Google's OAuth2 JWT bearer
-// flow). Token lifetime: 1 hour.
-function buildJwt(): string {
-  const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL as string;
-  const rawKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY as string;
-  // The PEM key arrives in the env var in any number of paste shapes:
-  // single-escaped \n, double-escaped \\n, real newlines, surrounding
-  // quotes, the whole JSON key file, or newlines stripped entirely.
-  // Normalize all of them before signing.
-  let privateKey = rawKey.trim();
-  if (
-    (privateKey.startsWith('"') && privateKey.endsWith('"')) ||
-    (privateKey.startsWith("'") && privateKey.endsWith("'"))
-  ) {
-    privateKey = privateKey.slice(1, -1);
+// Exchange the stored refresh token for a fresh access token.
+// Returns null when Google refuses the grant (expired/revoked token).
+async function getAccessToken(): Promise<{ token: string; scope: string } | null> {
+  const result = await googleRequest('https://oauth2.googleapis.com/token', 'POST', null, {
+    client_id: process.env.GOOGLE_OAUTH_CLIENT_ID,
+    client_secret: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
+    refresh_token: process.env.GOOGLE_OAUTH_REFRESH_TOKEN,
+    grant_type: 'refresh_token',
+  });
+  if (!result.ok) return null;
+  try {
+    const parsed = JSON.parse(result.body) as { access_token?: string; scope?: string };
+    if (typeof parsed.access_token !== 'string' || !parsed.access_token) return null;
+    return { token: parsed.access_token, scope: parsed.scope ?? '(none returned)' };
+  } catch {
+    return null;
   }
-  // Whole JSON key file pasted by mistake? Pull out the private_key field.
-  if (privateKey.startsWith('{')) {
-    try {
-      const parsed = JSON.parse(privateKey) as { private_key?: unknown };
-      if (typeof parsed.private_key === 'string') privateKey = parsed.private_key;
-    } catch {
-      // Fall through with the raw value; signing will surface the error.
-    }
-  }
-  privateKey = privateKey.replace(/\\\\n/g, '\n').replace(/\\n/g, '\n');
-  // Newlines stripped entirely (one long line)? Rebuild the PEM framing.
-  if (!privateKey.includes('\n') && privateKey.includes('-----BEGIN PRIVATE KEY-----')) {
-    const body = privateKey
-      .replace('-----BEGIN PRIVATE KEY-----', '')
-      .replace('-----END PRIVATE KEY-----', '')
-      .replace(/\s+/g, '');
-    const wrapped = body.replace(/(.{64})/g, '$1\n');
-    privateKey = `-----BEGIN PRIVATE KEY-----\n${wrapped}\n-----END PRIVATE KEY-----`;
-  }
-  const now = Math.floor(Date.now() / 1000);
-  const header = { alg: 'RS256', typ: 'JWT' };
-  const payload = {
-    iss: email,
-    scope: 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file',
-    aud: 'https://oauth2.googleapis.com/token',
-    exp: now + 3600,
-    iat: now,
-  };
-  const unsigned = `${base64Url(JSON.stringify(header))}.${base64Url(JSON.stringify(payload))}`;
-  const signature = crypto.sign('sha256', Buffer.from(unsigned), privateKey);
-  return `${unsigned}.${base64Url(signature)}`;
 }
 
 type GoogleApiResult = { ok: boolean; status: number; body: string };
@@ -156,23 +131,16 @@ export async function exportGameToSheets(
 ): Promise<SheetsExportResult> {
   if (!isSheetsConfigured()) return { mode: 'not_configured' };
   try {
-    // 1. Exchange the signed JWT for an access token.
-    const jwt = buildJwt();
-    const tokenResult = await googleRequest(
-      'https://oauth2.googleapis.com/token',
-      'POST',
-      null,
-      { grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: jwt },
-    );
-    if (!tokenResult.ok) {
-      return { mode: 'failed', error: googleError(tokenResult, 'Could not get a Google access token.') };
+    // 1. Exchange the stored refresh token for a fresh access token.
+    const token = await getAccessToken();
+    if (!token) {
+      return {
+        mode: 'failed',
+        error: 'Could not get a Google access token. The refresh token may be expired or revoked — re-run the consent flow to get a fresh one.',
+      };
     }
-    const tokenParsed = JSON.parse(tokenResult.body) as { access_token?: string; scope?: string };
-    const accessToken = tokenParsed.access_token;
-    const grantedScope = tokenParsed.scope ?? '(none returned)';
-    if (!accessToken) {
-      return { mode: 'failed', error: 'Google did not return an access token.' };
-    }
+    const accessToken = token.token;
+    const grantedScope = token.scope;
 
     // 2. Create the spreadsheet via the Drive API (not Sheets
     // spreadsheets.create). Google now returns 403 PERMISSION_DENIED for
