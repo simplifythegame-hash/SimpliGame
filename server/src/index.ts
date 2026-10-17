@@ -44,12 +44,22 @@ app.use(express.json());
 // / profile / enroll pages, the health check, and the auth endpoints
 // themselves (which handle their own auth).
 app.use('/api', authenticate);
+// Worker routes (the local Dell worker) authenticate with the
+// X-Worker-Key header, NOT a session cookie — the worker runs outside
+// a browser and has no cookie. The handlers themselves verify the key;
+// the gate here only exempts them from the session requirement.
+function isWorkerRoute(method: string, path: string): boolean {
+  if (method === 'GET' && path === '/analysis/jobs/pending') return true;
+  if (method === 'POST' && /^\/analysis\/jobs\/[^/]+\/results$/.test(path)) return true;
+  return false;
+}
 app.use('/api', (req, res, next) => {
   const path = req.path;
   if (
     path === '/health' ||
     path.startsWith('/public/') ||
-    path.startsWith('/auth/')
+    path.startsWith('/auth/') ||
+    isWorkerRoute(req.method, path)
   ) {
     next();
     return;
@@ -2629,6 +2639,417 @@ app.post(
           ok: false,
           error: 'Analysis table is missing — run migrations/008_game_analysis.sql in the Neon SQL Editor, then restart.',
         });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+// ------------------------------------------- AI Vision Phase 1: AI Review Queue
+// Post-game ONLY, human-in-the-loop. The coach's own machine (the
+// local worker, worker/analyze.py) polls for pending jobs, downloads
+// the game's video itself, runs the local model (our own weights,
+// trained on our own footage), and POSTs candidate events back. The
+// server stores jobs + candidates and serves the Review Queue. NO
+// inference runs on the server (Render has no GPU) and footage is
+// never uploaded anywhere — the worker processes it locally and
+// deletes it.
+//
+// Worker auth: the shared WORKER_KEY env var, sent as X-Worker-Key.
+// The key is never logged. If WORKER_KEY is unset, worker routes 503.
+//
+// Coach routes use the existing 'reels' permission (head_coach+) —
+// analysis is the same tier as exports/reels, per the matrix.
+// If migration 010 has not run yet, endpoints fail with an explicit
+// run-the-migration message.
+const AI_ANALYSIS_MIGRATION_MESSAGE =
+  'AI analysis is not set up yet — run migrations/010_ai_analysis.sql in the Neon SQL Editor, then restart.';
+
+function isMissingAiAnalysisTable(err: unknown): boolean {
+  return (err as { code?: string }).code === '42P01';
+}
+
+/** Worker-key check: timing-safe compare, never logs the key. */
+function workerKeyOk(req: express.Request): boolean {
+  const configured = process.env.WORKER_KEY;
+  if (!configured) return false;
+  const presented = req.headers['x-worker-key'];
+  if (typeof presented !== 'string') return false;
+  const a = Buffer.from(presented);
+  const b = Buffer.from(configured);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function requireWorkerKey(req: express.Request, res: express.Response, next: express.NextFunction): void {
+  if (!process.env.WORKER_KEY) {
+    res.status(503).json({ ok: false, error: 'Worker key is not configured — set WORKER_KEY in Render and restart.' });
+    return;
+  }
+  if (!workerKeyOk(req)) {
+    res.status(401).json({ ok: false, error: 'Invalid worker key.' });
+    return;
+  }
+  next();
+}
+
+/** Map a stat label to the side/points the event pipeline expects.
+//  Mirrors the client stat buttons (VOLLEYBALL_STAT_BUTTONS): scoring
+//  stats carry their point; everything else records with no score. */
+function aiStatToSidePoints(stat: string): { side: 'ours' | 'opponent'; points: number } {
+  switch (stat) {
+    case 'Kill':
+    case 'Ace':
+    case 'Block':
+      return { side: 'ours', points: 1 };
+    case 'Serve Error':
+    case 'Passing Error':
+      return { side: 'opponent', points: 1 };
+    default:
+      return { side: 'ours', points: 0 };
+  }
+}
+
+const VALID_AI_STATS = new Set([
+  'Kill', 'Ace', 'Block', 'Assist', 'Dig', 'Attack Attempt',
+  'Serve Error', 'Passing Error', 'Serve', 'Error', 'Attack attempt',
+]);
+
+// Create a pending job for a finished game. One active job per game —
+// if one is already pending/processing, return it instead of duping.
+app.post(
+  '/api/games/:gameId/analysis-job',
+  requirePermission('reels'),
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const gameId = String(req.params.gameId);
+    const game = await getOrgGame(db, req, gameId);
+    if (!game) {
+      res.status(404).json({ ok: false, error: 'Game not found.' });
+      return;
+    }
+    if (game.status !== 'final') {
+      res.status(400).json({ ok: false, error: 'AI analysis runs on finished games only — end the game first.' });
+      return;
+    }
+    if (!game.youtube_video_id) {
+      res.status(400).json({ ok: false, error: 'Attach a video first — the worker needs a video to analyze.' });
+      return;
+    }
+    try {
+      const existing = await db.query(
+        `SELECT * FROM analysis_jobs WHERE game_id = $1 AND status IN ('pending', 'processing')
+         ORDER BY created_at DESC LIMIT 1`,
+        [gameId],
+      );
+      if (existing.rows.length > 0) {
+        res.json({ ok: true, job: existing.rows[0], existed: true });
+        return;
+      }
+      const created = await db.query(
+        `INSERT INTO analysis_jobs (game_id, status) VALUES ($1, 'pending') RETURNING *`,
+        [gameId],
+      );
+      res.status(201).json({ ok: true, job: created.rows[0], existed: false });
+    } catch (err) {
+      if (isMissingAiAnalysisTable(err)) {
+        res.status(503).json({ ok: false, error: AI_ANALYSIS_MIGRATION_MESSAGE });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+// Latest job + its candidates for one game (coach view).
+app.get(
+  '/api/games/:gameId/analysis-job',
+  requirePermission('reels'),
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const gameId = String(req.params.gameId);
+    const game = await getOrgGame(db, req, gameId);
+    if (!game) {
+      res.status(404).json({ ok: false, error: 'Game not found.' });
+      return;
+    }
+    try {
+      const job = await db.query(
+        `SELECT * FROM analysis_jobs WHERE game_id = $1 ORDER BY created_at DESC LIMIT 1`,
+        [gameId],
+      );
+      if (job.rows.length === 0) {
+        res.json({ ok: true, job: null, candidates: [] });
+        return;
+      }
+      const candidates = await db.query(
+        `SELECT * FROM analysis_candidates WHERE job_id = $1 ORDER BY timestamp_sec ASC`,
+        [job.rows[0].id],
+      );
+      res.json({ ok: true, job: job.rows[0], candidates: candidates.rows });
+    } catch (err) {
+      if (isMissingAiAnalysisTable(err)) {
+        res.status(503).json({ ok: false, error: AI_ANALYSIS_MIGRATION_MESSAGE });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+// All jobs for the coach's org (drives the per-game status in the
+// Live tab Final list). Head_coach+; non-owners see only their teams.
+app.get(
+  '/api/analysis/jobs',
+  requirePermission('reels'),
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const auth = authOf(req);
+    try {
+      const jobs = await db.query(
+        `SELECT j.* FROM analysis_jobs j
+         JOIN games g ON g.id = j.game_id JOIN teams t ON t.id = g.team_id
+         WHERE t.org_id = $1${auth.teamIds ? ' AND t.id = ANY($2)' : ''}
+         ORDER BY j.created_at DESC`,
+        auth.teamIds ? [auth.user.org_id, auth.teamIds] : [auth.user.org_id],
+      );
+      res.json({ ok: true, jobs: jobs.rows });
+    } catch (err) {
+      if (isMissingAiAnalysisTable(err)) {
+        res.status(503).json({ ok: false, error: AI_ANALYSIS_MIGRATION_MESSAGE });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+// Worker: list pending jobs with the video to download. The worker
+// polls this — nothing ever connects inbound to the owner's machine.
+app.get(
+  '/api/analysis/jobs/pending',
+  requireWorkerKey,
+  asyncHandler(async (_req, res) => {
+    const db = getPool();
+    try {
+      const jobs = await db.query(
+        `SELECT j.id, j.game_id, g.youtube_video_id
+         FROM analysis_jobs j JOIN games g ON g.id = j.game_id
+         WHERE j.status = 'pending' ORDER BY j.created_at ASC`,
+      );
+      res.json({ ok: true, jobs: jobs.rows });
+    } catch (err) {
+      if (isMissingAiAnalysisTable(err)) {
+        res.status(503).json({ ok: false, error: AI_ANALYSIS_MIGRATION_MESSAGE });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+// Worker: post candidates for a job. Sets the job to done (or failed
+// with an error message, so the queue shows what went wrong instead
+// of hanging on "Processing" forever).
+app.post(
+  '/api/analysis/jobs/:jobId/results',
+  requireWorkerKey,
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const jobId = String(req.params.jobId);
+    const { candidates, status, error } = req.body ?? {};
+    try {
+      const job = await db.query('SELECT * FROM analysis_jobs WHERE id = $1', [jobId]);
+      if (job.rows.length === 0) {
+        res.status(404).json({ ok: false, error: 'Job not found.' });
+        return;
+      }
+      if (status === 'failed') {
+        await db.query(
+          `UPDATE analysis_jobs SET status = 'failed', error = $2, updated_at = now() WHERE id = $1`,
+          [jobId, typeof error === 'string' ? error.slice(0, 500) : 'Worker failed.'],
+        );
+        res.json({ ok: true, job: { ...job.rows[0], status: 'failed' } });
+        return;
+      }
+      if (!Array.isArray(candidates)) {
+        res.status(400).json({ ok: false, error: 'candidates must be an array.' });
+        return;
+      }
+      const client = await db.connect();
+      try {
+        await client.query('BEGIN');
+        // Re-posting results for the same job replaces the old
+        // candidates — the worker is the single writer per job.
+        await client.query('DELETE FROM analysis_candidates WHERE job_id = $1', [jobId]);
+        for (const c of candidates) {
+          const ts = Number(c?.timestamp_sec);
+          const start = Number(c?.clip_start_sec ?? Math.max(0, ts - 3));
+          const end = Number(c?.clip_end_sec ?? ts + 3);
+          const conf = Number(c?.confidence ?? 0);
+          if (!Number.isFinite(ts) || ts < 0) continue;
+          if (typeof c?.proposed_stat !== 'string' || !c.proposed_stat.trim()) continue;
+          await client.query(
+            `INSERT INTO analysis_candidates
+             (job_id, game_id, timestamp_sec, clip_start_sec, clip_end_sec, proposed_stat, proposed_player_id, confidence)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [
+              jobId,
+              job.rows[0].game_id,
+              ts,
+              Number.isFinite(start) ? Math.max(0, start) : Math.max(0, ts - 3),
+              Number.isFinite(end) ? Math.max(end, ts) : ts + 3,
+              c.proposed_stat.trim().slice(0, 100),
+              typeof c?.proposed_player_id === 'string' ? c.proposed_player_id : null,
+              Number.isFinite(conf) ? Math.min(1, Math.max(0, conf)) : 0,
+            ],
+          );
+        }
+        await client.query(
+          `UPDATE analysis_jobs SET status = 'done', error = NULL, updated_at = now() WHERE id = $1`,
+          [jobId],
+        );
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+      res.json({ ok: true, job: { ...job.rows[0], status: 'done' }, candidateCount: candidates.length });
+    } catch (err) {
+      if (isMissingAiAnalysisTable(err)) {
+        res.status(503).json({ ok: false, error: AI_ANALYSIS_MIGRATION_MESSAGE });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+// Confirm a candidate: writes a NORMAL event via the same pipeline
+// as a manual tap (score, box score, totals all follow), then marks
+// the candidate confirmed — or corrected if the coach changed the
+// stat and/or player. entry_method 'ai' marks it as AI-proposed,
+// human-confirmed.
+app.post(
+  '/api/analysis/candidates/:candidateId/confirm',
+  requirePermission('reels'),
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const candidateId = String(req.params.candidateId);
+    const { stat, player_id } = req.body ?? {};
+    try {
+      const cand = await db.query(
+        `SELECT c.*, j.game_id FROM analysis_candidates c
+         JOIN analysis_jobs j ON j.id = c.job_id WHERE c.id = $1`,
+        [candidateId],
+      );
+      if (cand.rows.length === 0) {
+        res.status(404).json({ ok: false, error: 'Candidate not found.' });
+        return;
+      }
+      const candidate = cand.rows[0];
+      const game = await getOrgGame(db, req, candidate.game_id);
+      if (!game) {
+        res.status(404).json({ ok: false, error: 'Candidate not found.' });
+        return;
+      }
+      if (candidate.status !== 'pending') {
+        res.status(400).json({ ok: false, error: 'This candidate was already reviewed.' });
+        return;
+      }
+      const finalStat = typeof stat === 'string' && stat.trim() ? stat.trim() : candidate.proposed_stat;
+      if (!VALID_AI_STATS.has(finalStat)) {
+        res.status(400).json({ ok: false, error: 'Unknown stat type.' });
+        return;
+      }
+      const finalPlayerId =
+        player_id === null ? null : typeof player_id === 'string' ? player_id : candidate.proposed_player_id;
+      if (finalPlayerId) {
+        const p = await db.query(
+          'SELECT id FROM players WHERE id = $1 AND team_id = $2',
+          [finalPlayerId, game.team_id],
+        );
+        if (p.rows.length === 0) {
+          res.status(400).json({ ok: false, error: 'Player is not on this game\'s team.' });
+          return;
+        }
+      }
+      const { side, points } = aiStatToSidePoints(finalStat);
+      const corrected =
+        finalStat !== candidate.proposed_stat ||
+        (finalPlayerId ?? null) !== (candidate.proposed_player_id ?? null);
+      const client = await db.connect();
+      try {
+        await client.query('BEGIN');
+        const event = await client.query(
+          `INSERT INTO game_events (game_id, player_id, stat_type, side, points, video_seconds, entry_method)
+           VALUES ($1, $2, $3, $4, $5, $6, 'ai') RETURNING *`,
+          [candidate.game_id, finalPlayerId, finalStat, side, points, Math.round(candidate.timestamp_sec)],
+        );
+        if (points > 0) {
+          const column = side === 'ours' ? 'our_score' : 'opponent_score';
+          await client.query(`UPDATE games SET ${column} = ${column} + $1 WHERE id = $2`, [points, candidate.game_id]);
+        }
+        await client.query(
+          `UPDATE analysis_candidates
+           SET status = $2, final_stat = $3, final_player_id = $4 WHERE id = $1`,
+          [candidateId, corrected ? 'corrected' : 'confirmed', finalStat, finalPlayerId],
+        );
+        await client.query('COMMIT');
+        res.status(201).json({
+          ok: true,
+          event: event.rows[0],
+          candidate: { ...candidate, status: corrected ? 'corrected' : 'confirmed', final_stat: finalStat, final_player_id: finalPlayerId },
+        });
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+    } catch (err) {
+      if (isMissingAiAnalysisTable(err)) {
+        res.status(503).json({ ok: false, error: AI_ANALYSIS_MIGRATION_MESSAGE });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+// Skip a candidate: no event is written.
+app.post(
+  '/api/analysis/candidates/:candidateId/skip',
+  requirePermission('reels'),
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const candidateId = String(req.params.candidateId);
+    try {
+      const cand = await db.query(
+        `SELECT c.*, j.game_id FROM analysis_candidates c
+         JOIN analysis_jobs j ON j.id = c.job_id WHERE c.id = $1`,
+        [candidateId],
+      );
+      if (cand.rows.length === 0) {
+        res.status(404).json({ ok: false, error: 'Candidate not found.' });
+        return;
+      }
+      const game = await getOrgGame(db, req, cand.rows[0].game_id);
+      if (!game) {
+        res.status(404).json({ ok: false, error: 'Candidate not found.' });
+        return;
+      }
+      if (cand.rows[0].status !== 'pending') {
+        res.status(400).json({ ok: false, error: 'This candidate was already reviewed.' });
+        return;
+      }
+      await db.query(`UPDATE analysis_candidates SET status = 'skipped' WHERE id = $1`, [candidateId]);
+      res.json({ ok: true, candidate: { ...cand.rows[0], status: 'skipped' } });
+    } catch (err) {
+      if (isMissingAiAnalysisTable(err)) {
+        res.status(503).json({ ok: false, error: AI_ANALYSIS_MIGRATION_MESSAGE });
         return;
       }
       throw err;
