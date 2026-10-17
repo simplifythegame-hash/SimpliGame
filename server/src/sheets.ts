@@ -36,9 +36,10 @@ function base64Url(input: Buffer | string): string {
 function buildJwt(): string {
   const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL as string;
   const rawKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY as string;
-  // Render env vars store the PEM key with literal \n escapes — but pastes
-  // arrive in several shapes (single-escaped \n, double-escaped \\n, real
-  // newlines, surrounding quotes). Normalize all of them before signing.
+  // The PEM key arrives in the env var in any number of paste shapes:
+  // single-escaped \n, double-escaped \\n, real newlines, surrounding
+  // quotes, the whole JSON key file, or newlines stripped entirely.
+  // Normalize all of them before signing.
   let privateKey = rawKey.trim();
   if (
     (privateKey.startsWith('"') && privateKey.endsWith('"')) ||
@@ -46,7 +47,25 @@ function buildJwt(): string {
   ) {
     privateKey = privateKey.slice(1, -1);
   }
+  // Whole JSON key file pasted by mistake? Pull out the private_key field.
+  if (privateKey.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(privateKey) as { private_key?: unknown };
+      if (typeof parsed.private_key === 'string') privateKey = parsed.private_key;
+    } catch {
+      // Fall through with the raw value; signing will surface the error.
+    }
+  }
   privateKey = privateKey.replace(/\\\\n/g, '\n').replace(/\\n/g, '\n');
+  // Newlines stripped entirely (one long line)? Rebuild the PEM framing.
+  if (!privateKey.includes('\n') && privateKey.includes('-----BEGIN PRIVATE KEY-----')) {
+    const body = privateKey
+      .replace('-----BEGIN PRIVATE KEY-----', '')
+      .replace('-----END PRIVATE KEY-----', '')
+      .replace(/\s+/g, '');
+    const wrapped = body.replace(/(.{64})/g, '$1\n');
+    privateKey = `-----BEGIN PRIVATE KEY-----\n${wrapped}\n-----END PRIVATE KEY-----`;
+  }
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: 'RS256', typ: 'JWT' };
   const payload = {
