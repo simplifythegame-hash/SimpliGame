@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from './api';
-import type { AuthUser, Coach, EnrollInfo, FamilyContact, Game, GameAnalysis, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Team, Workspace } from './types';
+import type { AuthUser, Coach, EnrollInfo, FamilyContact, Game, GameAnalysis, GameEvent, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Team, Workspace } from './types';
 import YouTubePlayer from './components/YouTubePlayer';
 import VideoPlaceholder from './components/VideoPlaceholder';
 import { downloadGameCsv } from './csv';
@@ -18,6 +18,10 @@ const STAT_BUTTONS: { label: string; points: number }[] = [
   { label: 'Serve', points: 0 },
   { label: 'Error', points: 0 },
 ];
+
+/** Stat types that count as highlights (same list Reel Studio uses when
+ *  offering events to add as clips). */
+const HIGHLIGHT_STAT_TYPES = ['Kill', 'Ace', 'Block', 'Assist', 'Dig'];
 
 type View =
   | { kind: 'home' }
@@ -560,6 +564,8 @@ export default function App() {
           role={me.role}
           games={workspace.games}
           teams={workspace.teams}
+          events={workspace.events}
+          players={workspace.players}
           onOpen={(reelId) => setView({ kind: 'studio', reelId })}
         />
       )}
@@ -967,6 +973,8 @@ function HighlightBuilderScreen(props: {
   role: ClientRole;
   games: Game[];
   teams: Team[];
+  events: GameEvent[];
+  players: Player[];
   onOpen: (reelId: string) => void;
 }) {
   return (
@@ -979,6 +987,13 @@ function HighlightBuilderScreen(props: {
         </p>
       </section>
       <AutoReelSection games={props.games} teams={props.teams} onOpen={props.onOpen} />
+      <EventsByPlayerSection
+        games={props.games}
+        teams={props.teams}
+        events={props.events}
+        players={props.players}
+        onOpen={props.onOpen}
+      />
       <ReelsListScreen role={props.role} games={props.games} teams={props.teams} onOpen={props.onOpen} />
     </>
   );
@@ -1037,6 +1052,155 @@ function AutoReelSection(props: {
         </button>
       </div>
       {error && <p className="error">{error}</p>}
+    </section>
+  );
+}
+
+/** Events by player: pick a game, see its recorded events grouped by the
+ *  player they are assigned to, and build a reel from one player's
+ *  highlights. This is where the Live screen's events feed moved —
+ *  the Live screen stays lean (matchup → video → tracker → box score)
+ *  and events live here, next to the reel flows that use them. */
+function EventsByPlayerSection(props: {
+  games: Game[];
+  teams: Team[];
+  events: GameEvent[];
+  players: Player[];
+  onOpen: (reelId: string) => void;
+}) {
+  const [gameId, setGameId] = useState('');
+  const [busyPlayerId, setBusyPlayerId] = useState<string | null>(null);
+  const [error, setError] = useState('');
+
+  const game = props.games.find((g) => g.id === gameId);
+  const gameEvents = useMemo(
+    () => (game ? props.events.filter((e) => e.game_id === game.id) : []),
+    [game, props.events],
+  );
+
+  // Group by assigned player; events with no player (opponent points,
+  // Game started/ended) go under "Other" so nothing is lost.
+  const groups = useMemo(() => {
+    const byPlayer = new Map<string, GameEvent[]>();
+    const other: GameEvent[] = [];
+    for (const e of gameEvents) {
+      if (e.player_id) {
+        const arr = byPlayer.get(e.player_id) ?? [];
+        arr.push(e);
+        byPlayer.set(e.player_id, arr);
+      } else {
+        other.push(e);
+      }
+    }
+    return { byPlayer, other };
+  }, [gameEvents]);
+
+  // Build a reel from one player's highlight events — same clip shape
+  // Reel Studio's "Add highlights" uses — then open it in Studio.
+  async function buildReelForPlayer(player: Player, events: GameEvent[]) {
+    if (!game) return;
+    const highlightEvents = events.filter((e) => HIGHLIGHT_STAT_TYPES.includes(e.stat_type));
+    if (highlightEvents.length === 0) return;
+    setBusyPlayerId(player.id);
+    setError('');
+    try {
+      const reel = await api.createReel({
+        name: `#${player.jersey_number} ${player.name} — Highlights`,
+        game_id: game.id,
+        clips: highlightEvents.map((e) => ({
+          eventId: e.id,
+          gameId: e.game_id,
+          videoId: game.youtube_video_id,
+          startSeconds: Math.max(0, e.video_seconds - 2),
+          endSeconds: e.video_seconds + 8,
+          transition: 'cut' as const,
+          overlay: `#${player.jersey_number} ${player.name} — ${e.stat_type}`,
+          slowMo: false,
+        })),
+      });
+      props.onOpen(reel.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to build reel');
+    } finally {
+      setBusyPlayerId(null);
+    }
+  }
+
+  return (
+    <section>
+      <h2>Events by player</h2>
+      <p>
+        A game&apos;s recorded events, grouped by the player they belong to. Build a reel
+        from one player&apos;s highlights — it opens in Reel Studio for tweaking.
+      </p>
+      <div className="row">
+        <select value={gameId} onChange={(e) => setGameId(e.target.value)}>
+          <option value="">Pick a game…</option>
+          {props.games.map((g) => {
+            const team = props.teams.find((t) => t.id === g.team_id);
+            return (
+              <option key={g.id} value={g.id}>
+                {team?.name ?? 'Team'} vs {g.opponent || 'TBD'}
+              </option>
+            );
+          })}
+        </select>
+      </div>
+      {error && <p className="error">{error}</p>}
+      {game && gameEvents.length === 0 && <p>No events recorded in this game yet.</p>}
+      {game && gameEvents.length > 0 && (
+        <>
+          {[...groups.byPlayer.entries()].map(([playerId, events]) => {
+            const player = props.players.find((p) => p.id === playerId);
+            const highlightCount = events.filter((e) =>
+              HIGHLIGHT_STAT_TYPES.includes(e.stat_type),
+            ).length;
+            return (
+              <div key={playerId}>
+                <h3>
+                  #{player?.jersey_number ?? '?'} {player?.name ?? 'Unknown player'} —{' '}
+                  {events.length} event{events.length === 1 ? '' : 's'}
+                </h3>
+                <ul className="list">
+                  {events.map((e) => (
+                    <li key={e.id}>
+                      {e.stat_type}
+                      {e.points > 0 ? ` (+${e.points})` : ''} · at{' '}
+                      {formatTimestamp(e.video_seconds)}
+                    </li>
+                  ))}
+                </ul>
+                <div className="row">
+                  <button
+                    disabled={busyPlayerId === playerId || highlightCount === 0}
+                    onClick={() => player && buildReelForPlayer(player, events)}
+                  >
+                    {busyPlayerId === playerId
+                      ? 'Building…'
+                      : highlightCount === 0
+                        ? 'No highlight clips for this player'
+                        : `Build reel (${highlightCount} clip${highlightCount === 1 ? '' : 's'})`}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+          {groups.other.length > 0 && (
+            <div>
+              <h3>Other — {groups.other.length} event{groups.other.length === 1 ? '' : 's'}</h3>
+              <ul className="list">
+                {groups.other.map((e) => (
+                  <li key={e.id}>
+                    {e.stat_type}
+                    {e.points > 0 ? ` (+${e.points})` : ''} · at{' '}
+                    {formatTimestamp(e.video_seconds)}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
+      )}
     </section>
   );
 }
@@ -1833,14 +1997,6 @@ function LiveGameScreen(props: {
         </table>
       )}
 
-      <h3>Timeline</h3>
-      <ul className="list">
-        {[...props.events].reverse().slice(0, 10).map((e, i) => (
-          <li key={i}>
-            {e.stat_type} {e.points > 0 ? `(+${e.points})` : ''} — {e.side}
-          </li>
-        ))}
-      </ul>
     </section>
   );
 }
