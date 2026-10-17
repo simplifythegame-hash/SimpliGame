@@ -440,6 +440,17 @@ export const api = {
     await parseJson(await fetch('/api/auth/logout', { method: 'POST' }));
   },
 
+  /** Self-service password change (verifies the current password). */
+  async changePassword(currentPassword: string, newPassword: string) {
+    await parseJson(
+      await fetch('/api/auth/change-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword, newPassword }),
+      }),
+    );
+  },
+
   async listCoaches() {
     const data = await parseJson(await fetch('/api/coaches'));
     return data.coaches as import('./types').Coach[];
@@ -469,5 +480,16 @@ export const api = {
 
   async deleteCoach(id: string) {
     await parseJson(await fetch(`/api/coaches/${id}`, { method: 'DELETE' }));
+  },
+
+  /** Owner-only: set a coach's password + invalidate all their sessions. */
+  async resetCoachPassword(id: string, newPassword: string) {
+    await parseJson(
+      await fetch(`/api/coaches/${id}/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newPassword }),
+      }),
+    );
   },
 };
