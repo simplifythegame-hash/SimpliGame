@@ -18,7 +18,7 @@ import {
   NON_OWNER_ROLES,
   publicUser,
   requireAuth,
-  requireOwner,
+  requirePermission,
   sessionCookieValue,
   verifyPassword,
   type NonOwnerRole,
@@ -328,7 +328,7 @@ async function loadCoaches(db: ReturnType<typeof getPool>, orgId: string) {
 
 app.get(
   '/api/coaches',
-  requireOwner,
+  requirePermission('coach_manage'),
   asyncHandler(async (req, res) => {
     const db = getPool();
     const org = await getOrCreateOrganization(req.auth!.user.org_id);
@@ -338,7 +338,7 @@ app.get(
 
 app.post(
   '/api/coaches',
-  requireOwner,
+  requirePermission('coach_manage'),
   asyncHandler(async (req, res) => {
     const { email, password, name, role, teamIds } = req.body ?? {};
     const cleanMail = cleanEmail(email);
@@ -415,7 +415,7 @@ app.post(
 
 app.patch(
   '/api/coaches/:id',
-  requireOwner,
+  requirePermission('coach_manage'),
   asyncHandler(async (req, res) => {
     const { name, role, teamIds } = req.body ?? {};
     const db = getPool();
@@ -496,7 +496,7 @@ app.patch(
 
 app.delete(
   '/api/coaches/:id',
-  requireOwner,
+  requirePermission('coach_manage'),
   asyncHandler(async (req, res) => {
     const db = getPool();
     const org = await getOrCreateOrganization(req.auth!.user.org_id);
@@ -526,7 +526,7 @@ app.delete(
 // cannot target the owner account.
 app.post(
   '/api/coaches/:id/reset-password',
-  requireOwner,
+  requirePermission('coach_manage'),
   asyncHandler(async (req, res) => {
     const { newPassword } = req.body ?? {};
     const cleanNew = cleanPassword(newPassword);
@@ -621,7 +621,7 @@ app.get(
 // Rename the organization. Trims, requires a non-empty name, max 100 chars.
 app.patch(
   '/api/organization',
-  requireOwner,
+  requirePermission('org'),
   asyncHandler(async (req, res) => {
     const { name } = req.body ?? {};
     if (typeof name !== 'string' || !name.trim()) {
@@ -645,7 +645,7 @@ app.patch(
 // ----------------------------------------------------------------- teams
 app.post(
   '/api/teams',
-  requireOwner,
+  requirePermission('team_create'),
   asyncHandler(async (req, res) => {
     const { name, sport, season } = req.body ?? {};
     if (typeof name !== 'string' || !name.trim()) {
@@ -684,6 +684,7 @@ app.get(
 
 app.post(
   '/api/teams/:teamId/players',
+  requirePermission('roster'),
   asyncHandler(async (req, res) => {
     const { name, jersey_number, position } = req.body ?? {};
     if (typeof name !== 'string' || !name.trim()) {
@@ -828,6 +829,7 @@ app.get(
 
 app.patch(
   '/api/players/:playerId/profile',
+  requirePermission('profile_edit'),
   asyncHandler(async (req, res) => {
     const { bio, height, graduation_year, positions_text, school, club_team } = req.body ?? {};
     const db = getPool();
@@ -887,6 +889,7 @@ app.patch(
 // token so the old link dies while the published flag stays as-is.
 app.post(
   '/api/players/:playerId/profile/publish',
+  requirePermission('publish'),
   asyncHandler(async (req, res) => {
     const db = getPool();
     const org = await getOrCreateOrganization(req.auth!.user.org_id);
@@ -911,6 +914,7 @@ app.post(
 
 app.post(
   '/api/players/:playerId/profile/unpublish',
+  requirePermission('publish'),
   asyncHandler(async (req, res) => {
     const db = getPool();
     const org = await getOrCreateOrganization(req.auth!.user.org_id);
@@ -932,6 +936,7 @@ app.post(
 
 app.post(
   '/api/players/:playerId/profile/revoke',
+  requirePermission('publish'),
   asyncHandler(async (req, res) => {
     const db = getPool();
     const org = await getOrCreateOrganization(req.auth!.user.org_id);
@@ -955,6 +960,7 @@ app.post(
 // ----------------------------------------------------------------- games
 app.post(
   '/api/games',
+  requirePermission('game_create'),
   asyncHandler(async (req, res) => {
     const { team_id, opponent, sport, mode } = req.body ?? {};
     if (typeof team_id !== 'string' || !team_id) {
@@ -1043,6 +1049,7 @@ app.get(
 // because player aggregation filters on player_id.
 app.patch(
   '/api/games/:gameId/status',
+  requirePermission('game_status'),
   asyncHandler(async (req, res) => {
     const { status } = req.body ?? {};
     if (status !== 'draft' && status !== 'live' && status !== 'final') {
@@ -1110,6 +1117,7 @@ app.patch(
 // update in the same transaction so the two can never drift apart.
 app.post(
   '/api/games/:gameId/events',
+  requirePermission('tag_stats'),
   asyncHandler(async (req, res) => {
     const { player_id, stat_type, side, points, video_seconds } = req.body ?? {};
     if (typeof stat_type !== 'string' || !stat_type.trim()) {
@@ -1175,6 +1183,7 @@ app.post(
 // NULL and fall back to deleting the event only.
 app.post(
   '/api/games/:gameId/undo',
+  requirePermission('tag_stats'),
   asyncHandler(async (req, res) => {
     const db = getPool();
     const org = await getOrCreateOrganization(req.auth!.user.org_id);
@@ -1238,6 +1247,7 @@ app.post(
 // swap. Lineup swap + event land in one transaction.
 app.post(
   '/api/games/:gameId/sub',
+  requirePermission('sub'),
   asyncHandler(async (req, res) => {
     const { outPlayerId, inPlayerId } = req.body ?? {};
     if (typeof outPlayerId !== 'string' || !outPlayerId) {
@@ -1327,6 +1337,7 @@ app.post(
 // message — never a 500.
 app.post(
   '/api/games/:gameId/youtube',
+  requirePermission('youtube'),
   asyncHandler(async (req, res) => {
     const { url } = req.body ?? {};
     const videoId = extractYouTubeVideoId(url);
@@ -1382,6 +1393,7 @@ function newPublishToken() {
 
 app.post(
   '/api/games/:gameId/publish',
+  requirePermission('publish'),
   asyncHandler(async (req, res) => {
     const db = getPool();
     const org = await getOrCreateOrganization(req.auth!.user.org_id);
@@ -1404,6 +1416,7 @@ app.post(
 
 app.post(
   '/api/games/:gameId/unpublish',
+  requirePermission('publish'),
   asyncHandler(async (req, res) => {
     const db = getPool();
     const org = await getOrCreateOrganization(req.auth!.user.org_id);
@@ -1422,6 +1435,7 @@ app.post(
 
 app.post(
   '/api/games/:gameId/revoke',
+  requirePermission('publish'),
   asyncHandler(async (req, res) => {
     const db = getPool();
     const org = await getOrCreateOrganization(req.auth!.user.org_id);
@@ -1663,6 +1677,7 @@ app.get(
 
 app.post(
   '/api/reels',
+  requirePermission('reels'),
   asyncHandler(async (req, res) => {
     const { name, game_id, clips, music_track } = req.body ?? {};
     if (name !== undefined && (typeof name !== 'string' || !name.trim())) {
@@ -1716,6 +1731,7 @@ app.post(
 // Studio for tweaking — nothing here is final until the coach saves it.
 app.post(
   '/api/reels/auto',
+  requirePermission('reels'),
   asyncHandler(async (req, res) => {
     const { gameId, preset } = req.body ?? {};
     if (typeof gameId !== 'string' || !gameId) {
@@ -1784,6 +1800,7 @@ app.get(
 
 app.patch(
   '/api/reels/:id',
+  requirePermission('reels'),
   asyncHandler(async (req, res) => {
     const { name, clips, music_track, status } = req.body ?? {};
     const db = getPool();
@@ -1844,6 +1861,7 @@ app.patch(
 
 app.delete(
   '/api/reels/:id',
+  requirePermission('reels'),
   asyncHandler(async (req, res) => {
     const db = getPool();
     const org = await getOrCreateOrganization(req.auth!.user.org_id);
@@ -1862,6 +1880,7 @@ app.delete(
 // build — the export endpoint says so plainly instead of pretending.
 app.post(
   '/api/reels/:id/export',
+  requirePermission('reels'),
   asyncHandler(async (req, res) => {
     const db = getPool();
     const org = await getOrCreateOrganization(req.auth!.user.org_id);
@@ -1982,6 +2001,7 @@ async function sendGameSms(
 // kills the old link — same token model as watch/profile links.
 app.post(
   '/api/players/:playerId/enroll-token',
+  requirePermission('enroll'),
   asyncHandler(async (req, res) => {
     const db = getPool();
     const org = await getOrCreateOrganization(req.auth!.user.org_id);
@@ -2098,6 +2118,7 @@ app.get(
 // from another org 404s instead of leaking.
 app.delete(
   '/api/family/:contactId',
+  requirePermission('family_manage'),
   asyncHandler(async (req, res) => {
     const db = getPool();
     const org = await getOrCreateOrganization(req.auth!.user.org_id);
@@ -2157,6 +2178,7 @@ app.get(
 // carries the watch link, and an unpublished game has no link to send.
 app.post(
   '/api/games/:gameId/notify-highlights',
+  requirePermission('family_notify'),
   asyncHandler(async (req, res) => {
     const db = getPool();
     const org = await getOrCreateOrganization(req.auth!.user.org_id);
@@ -2195,6 +2217,7 @@ function formatSheetTimestamp(seconds: number): string {
 
 app.post(
   '/api/games/:gameId/export-sheets',
+  requirePermission('export'),
   asyncHandler(async (req, res) => {
     const db = getPool();
     const org = await getOrCreateOrganization(req.auth!.user.org_id);
@@ -2354,6 +2377,7 @@ app.get(
 
 app.post(
   '/api/games/:gameId/analysis/sections/:key/verify',
+  requirePermission('analysis_review'),
   asyncHandler(async (req, res) => {
     const key = String(req.params.key);
     if (!isAnalysisSectionKey(key)) {
@@ -2428,6 +2452,7 @@ app.post(
 
 app.post(
   '/api/games/:gameId/analysis/sections/:key/unverify',
+  requirePermission('analysis_review'),
   asyncHandler(async (req, res) => {
     const key = String(req.params.key);
     if (!isAnalysisSectionKey(key)) {
