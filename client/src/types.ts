@@ -240,3 +240,21 @@ export interface PublicProfile {
   club_team: string;
   stats: PlayerProfileStats;
 }
+
+/** Logged-in user: owner sees all teams; coaches see assigned teams.
+ *  Never includes a password hash. */
+export type CoachRole = 'owner' | 'head_coach' | 'assistant' | 'stat_crew';
+
+export interface AuthUser {
+  id: string;
+  org_id: string;
+  email: string;
+  name: string;
+  role: CoachRole;
+  created_at: string | null;
+}
+
+/** A coach account (owner-only view): role + assigned team IDs. */
+export interface Coach extends AuthUser {
+  teamIds: string[];
+}
