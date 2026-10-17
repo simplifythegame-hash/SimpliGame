@@ -196,6 +196,29 @@ export interface SheetExport {
   created_at: string;
 }
 
+/** Assisted post-game analysis: one overview section, computed from
+ *  the game's real recorded data (never AI, never invented).
+ *  confidence: high = closed/complete facts, estimated = derived from
+ *  an incomplete log, missing = no data to compute from. */
+export interface AnalysisSection {
+  key: string;
+  title: string;
+  confidence: 'high' | 'estimated' | 'missing';
+  summary: string;
+  detail: string[];
+  verified: boolean;
+  correction: string | null;
+  note: string | null;
+  verified_at: string | null;
+}
+
+/** Full analysis payload: freshly computed overview + stored review. */
+export interface GameAnalysis {
+  game_id: string;
+  overall_status: 'unreviewed' | 'partially verified' | 'verified';
+  sections: AnalysisSection[];
+}
+
 /** Public enroll page payload: ONLY the player's first name + team. */
 export interface EnrollInfo {
   player_first_name: string;
