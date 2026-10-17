@@ -4,7 +4,7 @@
  * so the app reads as SimpliGame, not as any one club. The org's colors
  * apply ONLY to the org's public face (public Watch + Profile pages),
  * which set --brand / --brand2 inline from the org record. The SG
- * lettermark is white with a navy outline on an orange tile. Pure
+ * lettermark is navy letters on an orange tile. Pure
  * visual layer —
  * no class names here carry behavior; every screen keeps working
  * exactly as before.
@@ -409,6 +409,89 @@ input.wide {
 
 .boxscore tbody tr:nth-child(even) td {
   background: #f7fafc;
+}
+
+/* ---- Live screen: matchup header + YouTube dropdown ---- */
+/* Matchup header sits ABOVE the video: teams + live score + status,
+ * navy banner so it reads as the game's scoreboard at a glance. */
+
+.live-matchup {
+  background: linear-gradient(100deg, var(--brand, #0A1F44), var(--brand2, #1B3560));
+  color: #fff;
+  border-radius: var(--radius);
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
+  box-shadow: var(--shadow);
+}
+
+.live-matchup-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.5rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.live-matchup-team {
+  font-size: 1.15rem;
+  font-weight: 700;
+}
+
+.live-matchup-score {
+  font-size: 2.25rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.live-matchup-meta {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin: 0.5rem 0 0.25rem;
+}
+
+.live-matchup .sub-hint {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.live-matchup p {
+  color: rgba(255, 255, 255, 0.85);
+  margin: 0.5rem 0 0;
+}
+
+.live-badge {
+  display: inline-block;
+  background: var(--accent, #FF6B1A);
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.85rem;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  padding: 0.25rem 0.75rem;
+}
+
+.live-badge-upcoming {
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+}
+
+.live-badge-final {
+  background: #fff;
+  color: var(--brand, #0A1F44);
+}
+
+/* YouTube attach, rehoused as a collapsed-by-default dropdown under
+ * the video — TEMPORARY until YouTube auto-starts on Go Live. */
+.youtube-dropdown {
+  margin: 0.75rem 0;
+}
+
+.youtube-dropdown-toggle {
+  font-weight: 600;
+}
+
+.youtube-dropdown .row {
+  margin-top: 0.5rem;
 }
 
 /* ---- Video ---- */
