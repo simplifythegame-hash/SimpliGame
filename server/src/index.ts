@@ -1046,6 +1046,71 @@ app.get(
   }),
 );
 
+// ------------------------------------------------------------ set lineup
+// Set the starting 6 for a DRAFT game — the lineup step of the Live
+// tab's Start Live Game flow. Exactly 6 unique players, all from the
+// game's team, replacing whatever lineup rows exist (game creation
+// seeds the first 6; this lets the coach pick their own 6). Draft-only:
+// once a game is live, lineup changes go through subs. Gated on
+// 'game_create' (head_coach) — lineup setup is part of game setup, so
+// no new permission action was added.
+app.post(
+  '/api/games/:gameId/lineup',
+  requirePermission('game_create'),
+  asyncHandler(async (req, res) => {
+    const { player_ids } = req.body ?? {};
+    if (
+      !Array.isArray(player_ids) ||
+      player_ids.length !== 6 ||
+      new Set(player_ids).size !== 6 ||
+      !player_ids.every((id) => typeof id === 'string')
+    ) {
+      res.status(400).json({ ok: false, error: 'Pick exactly 6 starting players.' });
+      return;
+    }
+    const db = getPool();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
+    const game = await getOrgGame(db, req, String(req.params.gameId));
+    if (!game) {
+      res.status(404).json({ ok: false, error: 'Game not found.' });
+      return;
+    }
+    if (game.status !== 'draft') {
+      res
+        .status(400)
+        .json({ ok: false, error: 'The starting lineup can only be set before a game goes live — use subs once live.' });
+      return;
+    }
+    const roster = await db.query('SELECT id FROM players WHERE team_id = $1 AND id = ANY($2)', [
+      game.team_id,
+      player_ids,
+    ]);
+    if (roster.rows.length !== 6) {
+      res.status(400).json({ ok: false, error: 'All 6 starters must be on this team\u2019s roster.' });
+      return;
+    }
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM lineups WHERE game_id = $1', [game.id]);
+      for (let i = 0; i < player_ids.length; i++) {
+        await client.query('INSERT INTO lineups (game_id, player_id, slot) VALUES ($1, $2, $3)', [
+          game.id,
+          player_ids[i],
+          i,
+        ]);
+      }
+      await client.query('COMMIT');
+      res.json({ ok: true });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }),
+);
+
 // -------------------------------------------------------- game status
 // Status transitions: draft → live ("Go Live"), live → final ("End
 // Game"). Anything else is a 400 with a plain explanation — a final game
