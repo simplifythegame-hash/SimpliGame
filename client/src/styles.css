@@ -438,6 +438,53 @@ input.wide {
   border-radius: var(--radius-sm);
 }
 
+/* ---- Video placeholder (temp screen) ---- */
+/* Fills the exact 16:9 slot the player occupies, so the layout never
+ * shifts when no video is loaded. Brand gradient + SG lettermark. */
+
+.video-placeholder {
+  width: 100%;
+  max-width: 720px;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow);
+  background: linear-gradient(120deg, var(--brand, #04bef1), var(--brand2, #048df1));
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  text-align: center;
+  padding: 1rem;
+}
+
+.video-placeholder-mark {
+  width: 84px;
+  height: 84px;
+  border-radius: 18px;
+}
+
+.video-placeholder-title {
+  font-size: 1.25rem;
+  font-weight: 800;
+}
+
+.video-placeholder-subtitle {
+  font-size: 0.95rem;
+  opacity: 0.9;
+}
+
+.video-placeholder-status {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  opacity: 0.85;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 999px;
+  padding: 0.25rem 0.75rem;
+}
+
 @media (max-width: 720px) {
   /* Narrow screens: the sidebar collapses back to a horizontal tab
    * row on top of the content. */
