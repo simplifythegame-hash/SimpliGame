@@ -44,7 +44,37 @@ a {
   padding: 1rem 1rem 3rem;
 }
 
-/* ---- Header: brand gradient, SG mark + org name ---- */
+/* ---- Start Live Game panel (Live tab) ---- */
+
+.setup-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1rem 1.25rem;
+  margin: 1rem 0;
+}
+
+.setup-panel h4 {
+  margin-top: 1.25rem;
+}
+
+/* ---- Manual stat mode toggle (Live screen, below the video) ---- */
+
+.manual-stats-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 1rem 0 0.25rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.manual-stats-toggle input {
+  width: 1.1rem;
+  height: 1.1rem;
+  accent-color: var(--accent);
+}
 
 .org-header {
   background: linear-gradient(100deg, var(--brand, #0A1F44), var(--brand2, #1B3560));
