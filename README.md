@@ -142,6 +142,17 @@ No env vars needed. First run migration 009, then restart.
 4. Team creation and org rename are owner-only. Everything else is
    team-scoped: coaches can tag stats, manage games, and view data only
    for their assigned teams.
+5. **Passwords:** any logged-in user can change their own password from
+   the header ("Change password" — verifies the current password and
+   signs out their other sessions). The owner can reset a coach's
+   password from the Coaches screen ("Reset password") — this signs the
+   coach out everywhere; share the new password with them out-of-band.
+   There is no email-based reset. A fully locked-out owner (no working
+   password, no other owner session) needs DB access: in the Neon SQL
+   Editor, delete all rows from `users` (sessions and coach assignments
+   cascade) — the one-time setup form re-opens only when zero users
+   exist. Then recreate the owner account and re-add any coaches.
+   Keep a written-down password in a safe place to avoid this.
 
 ## Google Sheets export (service account)
 
