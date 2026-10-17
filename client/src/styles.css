@@ -410,6 +410,22 @@ input.wide {
 /* Stat hint: shown above the always-visible stat buttons when no
    player is selected. Cards flash an orange outline so the coach
    knows to pick a player. */
+/* AI Vision Phase 1 — Review Queue candidate card: a 6-second clip,
+   the proposed stat + player, confidence, and Confirm / Correct /
+   Skip. Same card language as the rest of the app. */
+.candidate-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 0.9rem;
+  margin: 0.75rem 0;
+}
+
+.candidate-card p {
+  margin: 0.4rem 0;
+}
+
 .stat-hint {
   color: var(--accent-dark, #E55A00);
   font-weight: 700;
