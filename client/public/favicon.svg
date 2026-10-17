@@ -1,11 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="SimpliGame">
   <defs>
     <linearGradient id="sg-bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0B2A6B" />
-      <stop offset="1" stop-color="#16408F" />
+      <stop offset="0" stop-color="#FF7A1A" />
+      <stop offset="1" stop-color="#E55A00" />
     </linearGradient>
   </defs>
-  <!-- SG lettermark: white letters, Vegas gold outline, on the SimpliGame deep-blue tile. -->
+  <!-- SG lettermark: navy letters, no outline, on the SimpliGame orange tile. -->
   <rect width="512" height="512" rx="112" fill="url(#sg-bg)" />
-  <text x="256" y="342" font-family="Arial, Helvetica, sans-serif" font-size="280" font-weight="900" fill="#ffffff" stroke="#B4975A" stroke-width="14" stroke-linejoin="round" paint-order="stroke" text-anchor="middle" letter-spacing="-8">SG</text>
+  <text x="256" y="342" font-family="Arial, Helvetica, sans-serif" font-size="280" font-weight="900" fill="#0A1F44" text-anchor="middle" letter-spacing="-8">SG</text>
 </svg>
