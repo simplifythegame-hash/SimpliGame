@@ -423,6 +423,48 @@ export const api = {
     return data as import('./types').GameAnalysis;
   },
 
+  // ------------------------------------------- AI Vision Phase 1
+  // Post-game AI Review Queue. The coach creates a job; the local
+  // worker (owner's own machine) polls for it, processes the video
+  // locally, and posts candidates back. The coach confirms each
+  // candidate with one tap — nothing is published as AI-detected
+  // without a human yes.
+  async createAnalysisJob(gameId: string) {
+    const data = await parseJson(await fetch(`/api/games/${gameId}/analysis-job`, { method: 'POST' }));
+    return data as { job: import('./types').AnalysisJob; existed: boolean };
+  },
+
+  async getAnalysisJob(gameId: string) {
+    const data = await parseJson(await fetch(`/api/games/${gameId}/analysis-job`));
+    return data as {
+      job: import('./types').AnalysisJob | null;
+      candidates: import('./types').AnalysisCandidate[];
+    };
+  },
+
+  async getAnalysisJobs() {
+    const data = await parseJson(await fetch('/api/analysis/jobs'));
+    return data.jobs as import('./types').AnalysisJob[];
+  },
+
+  async confirmCandidate(candidateId: string, body: { stat?: string; player_id?: string | null }) {
+    const data = await parseJson(
+      await fetch(`/api/analysis/candidates/${candidateId}/confirm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    );
+    return data as { event: import('./types').GameEvent; candidate: import('./types').AnalysisCandidate };
+  },
+
+  async skipCandidate(candidateId: string) {
+    const data = await parseJson(
+      await fetch(`/api/analysis/candidates/${candidateId}/skip`, { method: 'POST' }),
+    );
+    return data as { candidate: import('./types').AnalysisCandidate };
+  },
+
   // ------------------------------------------- auth + coaches
   async getAuthStatus() {
     const data = await parseJson(await fetch('/api/auth/status'));
