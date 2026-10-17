@@ -278,7 +278,9 @@ export default function App() {
             </button>
           </form>
         ) : (
-          <h1>
+          <div className="org-brand-row">
+            <img className="org-logo" src="/icon.svg" alt="SimpliGame logo" />
+            <h1>
             {org.name}{' '}
             {me.role === 'owner' && (
               <button
@@ -292,7 +294,8 @@ export default function App() {
                 ✏️
               </button>
             )}
-          </h1>
+            </h1>
+          </div>
         )}
         <p className="tagline">SimpliGame — Simplify the Game</p>
         <p className="sub-hint">
@@ -517,7 +520,7 @@ function LoginScreen({ onDone }: { onDone: (user: AuthUser) => void }) {
   const [busy, setBusy] = useState(false);
   return (
     <div className="page">
-      <h1>SimpliGame</h1>
+      <div className="org-brand-row"><img className="org-logo" src="/icon.svg" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
       <p className="tagline">Simplify the Game</p>
       <section>
         <h2>Log in</h2>
@@ -560,7 +563,7 @@ function SetupScreen({ onDone }: { onDone: (user: AuthUser) => void }) {
   const [busy, setBusy] = useState(false);
   return (
     <div className="page">
-      <h1>SimpliGame</h1>
+      <div className="org-brand-row"><img className="org-logo" src="/icon.svg" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
       <p className="tagline">Simplify the Game</p>
       <section>
         <h2>Set up the owner account</h2>
@@ -2180,7 +2183,7 @@ function ProfilePage({ token }: { token: string }) {
     return (
       <div className="page">
         <header className="org-header">
-          <h1>SimpliGame</h1>
+          <div className="org-brand-row"><img className="org-logo" src="/icon.svg" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
         </header>
         <h2>This profile isn&rsquo;t published.</h2>
         <p>
@@ -2210,7 +2213,7 @@ function ProfilePage({ token }: { token: string }) {
   return (
     <div className="page">
       <header className="org-header">
-        <h1>SimpliGame</h1>
+        <div className="org-brand-row"><img className="org-logo" src="/icon.svg" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
         <p className="tagline">Recruiting profile</p>
       </header>
 
@@ -2295,7 +2298,7 @@ function WatchPage({ token }: { token: string }) {
     return (
       <div className="page">
         <header className="org-header">
-          <h1>SimpliGame</h1>
+          <div className="org-brand-row"><img className="org-logo" src="/icon.svg" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
         </header>
         <h2>This game isn&rsquo;t published.</h2>
         <p>
@@ -2317,7 +2320,7 @@ function WatchPage({ token }: { token: string }) {
   return (
     <div className="page">
       <header className="org-header">
-        <h1>SimpliGame</h1>
+        <div className="org-brand-row"><img className="org-logo" src="/icon.svg" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
         <p className="tagline">Live game</p>
       </header>
 
@@ -2902,7 +2905,7 @@ function EnrollPage({ token }: { token: string }) {
     return (
       <div className="page">
         <header className="org-header">
-          <h1>SimpliGame</h1>
+          <div className="org-brand-row"><img className="org-logo" src="/icon.svg" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
         </header>
         <h2>This enrollment link isn&rsquo;t valid.</h2>
         <p>
@@ -2925,7 +2928,7 @@ function EnrollPage({ token }: { token: string }) {
     return (
       <div className="page">
         <header className="org-header">
-          <h1>SimpliGame</h1>
+          <div className="org-brand-row"><img className="org-logo" src="/icon.svg" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
           <p className="tagline">Family text alerts</p>
         </header>
         {done.optedIn ? (
@@ -2969,7 +2972,7 @@ function EnrollPage({ token }: { token: string }) {
   return (
     <div className="page">
       <header className="org-header">
-        <h1>SimpliGame</h1>
+        <div className="org-brand-row"><img className="org-logo" src="/icon.svg" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
         <p className="tagline">Family text alerts</p>
       </header>
       <h2>
