@@ -323,7 +323,8 @@ export default function App() {
 
       <InstallPrompt />
 
-      <nav className="row">
+      <div className="app-layout">
+      <nav className="side-nav">
         <button className={view.kind === 'home' ? 'selected' : ''} onClick={() => setView({ kind: 'home' })}>Teams &amp; Games</button>
         {canRole(me.role, 'head_coach') && (
           <button
@@ -340,6 +341,7 @@ export default function App() {
         )}
       </nav>
 
+      <main className="app-main">
       {view.kind === 'home' && (
         <>
           <section>
@@ -508,6 +510,8 @@ export default function App() {
       {view.kind === 'coaches' && me.role === 'owner' && (
         <CoachesScreen teams={workspace.teams} onBack={() => setView({ kind: 'home' })} />
       )}
+      </main>
+      </div>
     </div>
   );
 }
