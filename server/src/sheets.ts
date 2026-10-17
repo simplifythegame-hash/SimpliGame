@@ -167,8 +167,9 @@ export async function exportGameToSheets(
     if (!tokenResult.ok) {
       return { mode: 'failed', error: googleError(tokenResult, 'Could not get a Google access token.') };
     }
-    const tokenParsed = JSON.parse(tokenResult.body) as { access_token?: string };
+    const tokenParsed = JSON.parse(tokenResult.body) as { access_token?: string; scope?: string };
     const accessToken = tokenParsed.access_token;
+    const grantedScope = tokenParsed.scope ?? '(none returned)';
     if (!accessToken) {
       return { mode: 'failed', error: 'Google did not return an access token.' };
     }
@@ -184,7 +185,10 @@ export async function exportGameToSheets(
       },
     );
     if (!createResult.ok) {
-      return { mode: 'failed', error: googleError(createResult, 'Could not create the spreadsheet.') };
+      return {
+        mode: 'failed',
+        error: `create: ${googleError(createResult, 'Could not create the spreadsheet.')} [granted scope: ${grantedScope}]`,
+      };
     }
     const created = JSON.parse(createResult.body) as { spreadsheetId?: string };
     const sheetId = created.spreadsheetId;
@@ -206,7 +210,10 @@ export async function exportGameToSheets(
       },
     );
     if (!writeResult.ok) {
-      return { mode: 'failed', error: googleError(writeResult, 'Could not write the game data to the spreadsheet.') };
+      return {
+        mode: 'failed',
+        error: `write: ${googleError(writeResult, 'Could not write the game data to the spreadsheet.')} [granted scope: ${grantedScope}]`,
+      };
     }
 
     // 4. Share: a named writer when GOOGLE_SHARE_EMAIL is set, otherwise
