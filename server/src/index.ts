@@ -1703,7 +1703,46 @@ app.get(
   }),
 );
 
-// ------------------------------------------- static client (production)
+// ------------------------------------------- public privacy policy
+// Served at /privacy so the Google OAuth verification submission has
+// a live privacy-policy URL on the app's own domain.
+app.get('/privacy', (_req, res) => {
+  res.type('html').send(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SimpliGame — Privacy Policy</title>
+<style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:760px;margin:40px auto;padding:0 20px;line-height:1.6;color:#1a1a1a}h1{font-size:28px}h2{font-size:19px;margin-top:28px}a{color:#048DF1}</style>
+</head><body>
+<h1>SimpliGame Privacy Policy</h1>
+<p><strong>Effective date:</strong> October 17, 2026</p>
+<p>SimpliGame ("the App") is a stat-tracking and video tool for youth and amateur sports clubs. This policy explains what information the App collects, how it is used, and the choices you have. By using the App, you agree to this policy.</p>
+<h2>Information we collect</h2>
+<ul>
+<li><strong>Organization and team information</strong> entered by a coach: organization name, branding colors and logo, team names, and roster details (player names, jersey numbers, positions, and, on recruiting profiles, grad year, school, club, bio, and measurables).</li>
+<li><strong>Game data</strong> entered or tagged by a coach: opponents, scores, stat events, substitutions, and YouTube video IDs with timestamps.</li>
+<li><strong>Family contact information</strong> that families enroll themselves: a phone number per player, provided only to receive game watch links and highlights-ready alerts. Coaches see masked numbers only.</li>
+<li><strong>Google account access (OAuth):</strong> when a coach connects Google, the App can create spreadsheets in that coach's Google Drive and write game data into them. The App does not read other files in the Drive. The Google Drive scope is limited to files the App creates or opens.</li>
+<li><strong>SMS delivery logs:</strong> records of alert attempts (recipient masked, status, time) so coaches can confirm delivery.</li>
+<li><strong>Export records:</strong> links to spreadsheets the coach exported.</li>
+</ul>
+<h2>How we use information</h2>
+<p>Information is used only to operate the App: live stat tagging, box scores, watch links, recruiting profiles, highlight reels, Google Sheets exports, and family SMS alerts. We do not sell personal information, and we do not use it for advertising.</p>
+<h2>Sharing</h2>
+<p>Information is shared only with the service providers needed to run the App: hosting (Render / Neon Postgres), Twilio (SMS delivery), Google APIs (Sheets and Drive exports, only when a coach triggers an export), and YouTube (video embeds for videos the coach links). Published watch links and recruiting profiles are coach-controlled, unlisted, token-only links — they are not indexed, searchable, or browsable. A coach can unpublish or regenerate any link at any time.</p>
+<h2>Youth sports data</h2>
+<p>SimpliGame is used by youth sports organizations. Roster and profile information about minors is entered by coaches or clubs, not collected directly from children. Public pages expose only what a coach has explicitly published, behind unguessable token links. A parent or guardian may request removal of a player's information by contacting us below, or through the player's coach.</p>
+<h2>Data retention and deletion</h2>
+<p>Data is retained while the organization uses the App. A coach may unpublish links at any time. To request deletion of an organization's data, contact us below.</p>
+<h2>Security</h2>
+<p>Connections are encrypted (HTTPS). Public pages are protected by unguessable tokens. No system is perfectly secure, and we do not claim the App cannot be breached — we use standard managed-hosting practices to protect stored data.</p>
+<h2>Changes to this policy</h2>
+<p>Updates will be posted at this URL. Continued use of the App after a change means you accept the updated policy.</p>
+<h2>Contact</h2>
+<p>Questions or deletion requests: <a href="mailto:APP_CONTACT_EMAIL">APP_CONTACT_EMAIL</a>.</p>
+</body></html>`);
+});
+
+
 // In production the client build (client/dist) is served by this server,
 // so one Render web service hosts the whole app.
 if (process.env.NODE_ENV === 'production') {
