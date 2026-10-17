@@ -2,6 +2,13 @@ import crypto from 'crypto';
 import express from 'express';
 import path from 'path';
 import { getOrCreateOrganization, getPool } from './db';
+import {
+  applyReview,
+  deriveOverallStatus,
+  generateOverview,
+  isAnalysisSectionKey,
+  type StoredSectionReview,
+} from './analysis';
 import { exportGameToSheets, isSheetsConfigured, type SheetRows } from './sheets';
 import { sendSms } from './sms';
 import { extractYouTubeVideoId } from './youtube';
@@ -1700,6 +1707,204 @@ app.get(
       [gameId],
     );
     res.json({ ok: true, exports: rows.rows });
+  }),
+);
+
+// ------------------------------------------- assisted post-game analysis
+// Rule-based overview + human sign-off. The overview is recomputed from
+// the game's real events on every read (never stored, never AI, never
+// invented); only the coach's per-section review state persists in
+// game_analysis. Overall status: unreviewed / partially verified /
+// verified. Only Verified sections count as official.
+//
+// If migration 008 has not run yet, GET still returns the overview
+// (with no review state) instead of 500ing; POSTs fail with an
+// explicit run-the-migration message.
+async function loadStoredReview(db: ReturnType<typeof getPool>, gameId: string) {
+  try {
+    const row = await db.query('SELECT sections FROM game_analysis WHERE game_id = $1', [gameId]);
+    return (row.rows[0]?.sections ?? {}) as Record<string, StoredSectionReview>;
+  } catch (err) {
+    // Table missing (migration 008 not run yet) → no review state.
+    if ((err as { code?: string }).code === '42P01') return {};
+    throw err;
+  }
+}
+
+function isMissingAnalysisTable(err: unknown): boolean {
+  return (err as { code?: string }).code === '42P01';
+}
+
+app.get(
+  '/api/games/:gameId/analysis',
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const gameId = String(req.params.gameId);
+    const game = await getOrgGame(db, org.id, gameId);
+    if (!game) {
+      res.status(404).json({ ok: false, error: 'Game not found.' });
+      return;
+    }
+    const [events, players] = await Promise.all([
+      db.query('SELECT * FROM game_events WHERE game_id = $1 ORDER BY created_at ASC, id ASC', [gameId]),
+      db.query('SELECT id, name, jersey_number FROM players WHERE team_id = $1', [game.team_id]),
+    ]);
+    const overview = generateOverview({
+      game: {
+        status: game.status,
+        our_score: game.our_score,
+        opponent_score: game.opponent_score,
+        youtube_video_id: game.youtube_video_id,
+      },
+      events: events.rows,
+      players: players.rows,
+    });
+    const stored = await loadStoredReview(db, gameId);
+    const sections = applyReview(overview, stored);
+    res.json({ ok: true, game_id: gameId, overall_status: deriveOverallStatus(sections), sections });
+  }),
+);
+
+app.post(
+  '/api/games/:gameId/analysis/sections/:key/verify',
+  asyncHandler(async (req, res) => {
+    const key = String(req.params.key);
+    if (!isAnalysisSectionKey(key)) {
+      res.status(400).json({ ok: false, error: 'Unknown analysis section.' });
+      return;
+    }
+    const { correction, note } = req.body ?? {};
+    for (const [field, value] of Object.entries({ correction, note })) {
+      if (value !== undefined && (typeof value !== 'string' || value.length > 500)) {
+        res.status(400).json({ ok: false, error: `${field} must be a string of 500 characters or fewer.` });
+        return;
+      }
+    }
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const gameId = String(req.params.gameId);
+    const game = await getOrgGame(db, org.id, gameId);
+    if (!game) {
+      res.status(404).json({ ok: false, error: 'Game not found.' });
+      return;
+    }
+    try {
+      const stored = await loadStoredReview(db, gameId);
+      stored[key] = {
+        verified: true,
+        correction: typeof correction === 'string' && correction.trim() ? correction.trim() : null,
+        note: typeof note === 'string' && note.trim() ? note.trim() : null,
+        verified_at: new Date().toISOString(),
+      };
+      // Recompute overall from the merged sections so the stored status
+      // always matches the review state.
+      const events = await db.query('SELECT * FROM game_events WHERE game_id = $1 ORDER BY created_at ASC, id ASC', [
+        gameId,
+      ]);
+      const players = await db.query('SELECT id, name, jersey_number FROM players WHERE team_id = $1', [
+        game.team_id,
+      ]);
+      const sections = applyReview(
+        generateOverview({
+          game: {
+            status: game.status,
+            our_score: game.our_score,
+            opponent_score: game.opponent_score,
+            youtube_video_id: game.youtube_video_id,
+          },
+          events: events.rows,
+          players: players.rows,
+        }),
+        stored,
+      );
+      const overall = deriveOverallStatus(sections);
+      await db.query(
+        `INSERT INTO game_analysis (game_id, sections, overall_status, updated_at)
+         VALUES ($1, $2, $3, now())
+         ON CONFLICT (game_id) DO UPDATE
+         SET sections = EXCLUDED.sections, overall_status = EXCLUDED.overall_status, updated_at = now()`,
+        [gameId, JSON.stringify(stored), overall],
+      );
+      res.json({ ok: true, game_id: gameId, overall_status: overall, sections });
+    } catch (err) {
+      if (isMissingAnalysisTable(err)) {
+        res.status(500).json({
+          ok: false,
+          error: 'Analysis table is missing — run migrations/008_game_analysis.sql in the Neon SQL Editor, then restart.',
+        });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+app.post(
+  '/api/games/:gameId/analysis/sections/:key/unverify',
+  asyncHandler(async (req, res) => {
+    const key = String(req.params.key);
+    if (!isAnalysisSectionKey(key)) {
+      res.status(400).json({ ok: false, error: 'Unknown analysis section.' });
+      return;
+    }
+    const db = getPool();
+    const org = await getOrCreateOrganization();
+    const gameId = String(req.params.gameId);
+    const game = await getOrgGame(db, org.id, gameId);
+    if (!game) {
+      res.status(404).json({ ok: false, error: 'Game not found.' });
+      return;
+    }
+    try {
+      const stored = await loadStoredReview(db, gameId);
+      const existing = stored[key];
+      // Back to pending. The correction/note are kept as the review
+      // history for this section — only the verified flag clears.
+      stored[key] = {
+        verified: false,
+        correction: existing?.correction ?? null,
+        note: existing?.note ?? null,
+        verified_at: null,
+      };
+      const events = await db.query('SELECT * FROM game_events WHERE game_id = $1 ORDER BY created_at ASC, id ASC', [
+        gameId,
+      ]);
+      const players = await db.query('SELECT id, name, jersey_number FROM players WHERE team_id = $1', [
+        game.team_id,
+      ]);
+      const sections = applyReview(
+        generateOverview({
+          game: {
+            status: game.status,
+            our_score: game.our_score,
+            opponent_score: game.opponent_score,
+            youtube_video_id: game.youtube_video_id,
+          },
+          events: events.rows,
+          players: players.rows,
+        }),
+        stored,
+      );
+      const overall = deriveOverallStatus(sections);
+      await db.query(
+        `INSERT INTO game_analysis (game_id, sections, overall_status, updated_at)
+         VALUES ($1, $2, $3, now())
+         ON CONFLICT (game_id) DO UPDATE
+         SET sections = EXCLUDED.sections, overall_status = EXCLUDED.overall_status, updated_at = now()`,
+        [gameId, JSON.stringify(stored), overall],
+      );
+      res.json({ ok: true, game_id: gameId, overall_status: overall, sections });
+    } catch (err) {
+      if (isMissingAnalysisTable(err)) {
+        res.status(500).json({
+          ok: false,
+          error: 'Analysis table is missing — run migrations/008_game_analysis.sql in the Neon SQL Editor, then restart.',
+        });
+        return;
+      }
+      throw err;
+    }
   }),
 );
 
