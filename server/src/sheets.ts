@@ -118,8 +118,25 @@ function googleRequest(
 
 function googleError(result: GoogleApiResult, fallback: string): string {
   try {
-    const parsed = JSON.parse(result.body) as { error?: { message?: string } };
-    if (parsed.error?.message) return parsed.error.message;
+    const parsed = JSON.parse(result.body) as {
+      error?: {
+        message?: string;
+        status?: string;
+        details?: Array<{ reason?: string; domain?: string; metadata?: Record<string, string> }>;
+      };
+    };
+    const err = parsed.error;
+    if (err?.message) {
+      // Google's details name the exact cause (e.g. SERVICE_DISABLED with
+      // metadata.service) — surface them instead of the bare message.
+      const detailBits = (err.details ?? [])
+        .map((d) =>
+          [d.reason, d.domain, d.metadata ? JSON.stringify(d.metadata) : ''].filter(Boolean).join(' '),
+        )
+        .filter(Boolean);
+      const suffix = [err.status, ...detailBits].filter(Boolean).join(' | ');
+      return suffix ? `${err.message} [${suffix}]` : err.message;
+    }
   } catch {
     // Keep the fallback.
   }
