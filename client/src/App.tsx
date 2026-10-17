@@ -19,6 +19,23 @@ const STAT_BUTTONS: { label: string; points: number }[] = [
 
 type View = { kind: 'home' } | { kind: 'live'; gameId: string } | { kind: 'detail'; gameId: string } | { kind: 'profile'; playerId: string } | { kind: 'reels' } | { kind: 'reel'; reelId: string } | { kind: 'coaches' };
 
+/**
+ * Client-side role gating mirrors the server's permission matrix
+ * (auth.ts) — it only hides/disables buttons; the server enforces
+ * everything. Rank: owner (4) > head_coach (3) > assistant (2) >
+ * stat_crew (1).
+ */
+type ClientRole = AuthUser['role'];
+const ROLE_RANK: Record<ClientRole, number> = {
+  owner: 4,
+  head_coach: 3,
+  assistant: 2,
+  stat_crew: 1,
+};
+function canRole(role: ClientRole, min: ClientRole): boolean {
+  return ROLE_RANK[role] >= ROLE_RANK[min];
+}
+
 export default function App() {
   // Public routes render standalone pages INSTEAD of the app shell — no
   // nav, no login, no editing, and no workspace fetch. The pathname
@@ -305,12 +322,14 @@ export default function App() {
 
       <nav className="row">
         <button className={view.kind === 'home' ? 'selected' : ''} onClick={() => setView({ kind: 'home' })}>Teams &amp; Games</button>
-        <button
-          className={view.kind === 'reels' || view.kind === 'reel' ? 'selected' : ''}
-          onClick={() => setView({ kind: 'reels' })}
-        >
-          Reels
-        </button>
+        {canRole(me.role, 'head_coach') && (
+          <button
+            className={view.kind === 'reels' || view.kind === 'reel' ? 'selected' : ''}
+            onClick={() => setView({ kind: 'reels' })}
+          >
+            Reels
+          </button>
+        )}
         {me.role === 'owner' && (
           <button className={view.kind === 'coaches' ? 'selected' : ''} onClick={() => setView({ kind: 'coaches' })}>
             Coaches
@@ -342,12 +361,14 @@ export default function App() {
           {selectedTeam && (
             <section>
               <h2>Roster — {selectedTeam.name}</h2>
-              <form onSubmit={handleAddPlayer} className="row">
-                <input value={playerName} onChange={(e) => setPlayerName(e.target.value)} placeholder="Player name" required />
-                <input value={playerJersey} onChange={(e) => setPlayerJersey(e.target.value)} placeholder="#" />
-                <input value={playerPosition} onChange={(e) => setPlayerPosition(e.target.value)} placeholder="Position" />
-                <button type="submit">Add player</button>
-              </form>
+              {canRole(me.role, 'head_coach') && (
+                <form onSubmit={handleAddPlayer} className="row">
+                  <input value={playerName} onChange={(e) => setPlayerName(e.target.value)} placeholder="Player name" required />
+                  <input value={playerJersey} onChange={(e) => setPlayerJersey(e.target.value)} placeholder="#" />
+                  <input value={playerPosition} onChange={(e) => setPlayerPosition(e.target.value)} placeholder="Position" />
+                  <button type="submit">Add player</button>
+                </form>
+              )}
               <ul className="list">
                 {roster.map((p) => (
                   <li key={p.id}>
@@ -358,14 +379,16 @@ export default function App() {
               </ul>
 
               <h3>New game</h3>
-              <form onSubmit={handleCreateGame} className="row">
-                <input value={opponent} onChange={(e) => setOpponent(e.target.value)} placeholder="Opponent" />
-                <select value={mode} onChange={(e) => setMode(e.target.value as 'live' | 'film')}>
-                  <option value="live">Live game</option>
-                  <option value="film">Film review</option>
-                </select>
-                <button type="submit">Create game</button>
-              </form>
+              {canRole(me.role, 'head_coach') && (
+                <form onSubmit={handleCreateGame} className="row">
+                  <input value={opponent} onChange={(e) => setOpponent(e.target.value)} placeholder="Opponent" />
+                  <select value={mode} onChange={(e) => setMode(e.target.value as 'live' | 'film')}>
+                    <option value="live">Live game</option>
+                    <option value="film">Film review</option>
+                  </select>
+                  <button type="submit">Create game</button>
+                </form>
+              )}
             </section>
           )}
 
@@ -390,6 +413,7 @@ export default function App() {
 
       {view.kind === 'live' && currentGame && (
         <LiveGameScreen
+          role={me.role}
           game={currentGame}
           players={workspace.players.filter((p) => p.team_id === currentGame.team_id)}
           lineupPlayerIds={workspace.lineups.filter((l) => l.game_id === currentGame.id).map((l) => l.player_id)}
@@ -415,6 +439,7 @@ export default function App() {
 
       {view.kind === 'detail' && currentGame && (
         <GameDetailScreen
+          role={me.role}
           game={currentGame}
           players={workspace.players.filter((p) => p.team_id === currentGame.team_id)}
           events={workspace.events.filter((e) => e.game_id === currentGame.id)}
@@ -453,6 +478,7 @@ export default function App() {
 
       {view.kind === 'reels' && (
         <ReelsListScreen
+          role={me.role}
           games={workspace.games}
           teams={workspace.teams}
           onOpen={(reelId) => setView({ kind: 'reel', reelId })}
@@ -461,6 +487,7 @@ export default function App() {
 
       {view.kind === 'reel' && (
         <ReelStudioScreen
+          role={me.role}
           reelId={view.reelId}
           workspace={workspace}
           onBack={() => setView({ kind: 'reels' })}
@@ -469,6 +496,7 @@ export default function App() {
 
       {view.kind === 'profile' && (
         <PlayerProfileScreen
+          role={me.role}
           player={workspace.players.find((p) => p.id === view.playerId)}
           onBack={() => setView({ kind: 'home' })}
         />
@@ -999,6 +1027,7 @@ function InstallPrompt() {
 }
 
 function LiveGameScreen(props: {
+  role: ClientRole;
   game: Game;
   players: Player[];
   lineupPlayerIds: string[];
@@ -1045,6 +1074,11 @@ function LiveGameScreen(props: {
   const subOutPlayer = props.players.find((p) => p.id === subOut);
   const subInPlayer = props.players.find((p) => p.id === subIn);
 
+  // Role gates (server enforces; the client only hides what the role
+  // may not do): stat crew tags stats + undo only — no subs, no Go Live
+  // / End Game.
+  const canAssistant = canRole(props.role, 'assistant');
+
   return (
     <section>
       <button onClick={props.onBack}>← All games</button>{' '}
@@ -1059,10 +1093,10 @@ function LiveGameScreen(props: {
         Status: <strong>{props.game.status}</strong>
       </p>
       <div className="row">
-        {props.game.status === 'draft' && (
+        {canAssistant && props.game.status === 'draft' && (
           <button onClick={() => props.onSetStatus('live')}>Go Live</button>
         )}
-        {props.game.status === 'live' && (
+        {canAssistant && props.game.status === 'live' && (
           <button onClick={() => props.onSetStatus('final')}>End Game</button>
         )}
         {props.game.status === 'final' && <span>Final — this game is closed.</span>}
@@ -1104,17 +1138,18 @@ function LiveGameScreen(props: {
       {onCourt.length === 0 && <p>No players on the roster yet — add players first.</p>}
 
       <div className="row">
-        {!subMode ? (
-          <button onClick={() => setSubMode(true)}>Sub</button>
-        ) : (
-          <>
-            <span className="sub-hint">Tap the player going out, then the bench player coming in.</span>
-            <button disabled={!subOut || !subIn} onClick={confirmSub}>
-              Confirm sub
-            </button>
-            <button onClick={exitSubMode}>Cancel</button>
-          </>
-        )}
+        {canAssistant &&
+          (!subMode ? (
+            <button onClick={() => setSubMode(true)}>Sub</button>
+          ) : (
+            <>
+              <span className="sub-hint">Tap the player going out, then the bench player coming in.</span>
+              <button disabled={!subOut || !subIn} onClick={confirmSub}>
+                Confirm sub
+              </button>
+              <button onClick={exitSubMode}>Cancel</button>
+            </>
+          ))}
       </div>
       {subMode && (
         <p>
@@ -1179,6 +1214,7 @@ function LiveGameScreen(props: {
 }
 
 function GameDetailScreen(props: {
+  role: ClientRole;
   game: Game;
   players: Player[];
   events: { player_id: string | null; stat_type: string; points: number; side: string; created_at: string; video_seconds: number }[];
@@ -1321,10 +1357,10 @@ function GameDetailScreen(props: {
         Status: <strong>{props.game.status}</strong>
       </p>
       <div className="row">
-        {props.game.status === 'draft' && (
+        {canRole(props.role, 'assistant') && props.game.status === 'draft' && (
           <button onClick={() => props.onSetStatus('live')}>Go Live</button>
         )}
-        {props.game.status === 'live' && (
+        {canRole(props.role, 'assistant') && props.game.status === 'live' && (
           <button onClick={() => props.onSetStatus('final')}>End Game</button>
         )}
         {props.game.status === 'final' && <span>Final — this game is closed.</span>}
@@ -1341,21 +1377,23 @@ function GameDetailScreen(props: {
       )}
 
       <h3>Video</h3>
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          props.onSaveYouTube();
-        }}
-      >
-        <input
-          value={props.youtubeUrl}
-          onChange={(e) => props.onYoutubeUrlChange(e.target.value)}
-          placeholder="Paste YouTube link or video ID"
-          className="wide"
-        />
-        <button type="submit">Save video</button>
-      </form>
+      {canRole(props.role, 'head_coach') && (
+        <form
+          className="row"
+          onSubmit={(e) => {
+            e.preventDefault();
+            props.onSaveYouTube();
+          }}
+        >
+          <input
+            value={props.youtubeUrl}
+            onChange={(e) => props.onYoutubeUrlChange(e.target.value)}
+            placeholder="Paste YouTube link or video ID"
+            className="wide"
+          />
+          <button type="submit">Save video</button>
+        </form>
+      )}
       {props.game.youtube_video_id ? (
         <YouTubePlayer videoId={props.game.youtube_video_id} isLive={props.game.status === 'live'} />
       ) : (
@@ -1391,10 +1429,12 @@ function GameDetailScreen(props: {
               {copied ? 'Copied!' : 'Copy link'}
             </button>
           </div>
-          <div className="row">
-            <button onClick={props.onUnpublish}>Unpublish</button>
-            <button onClick={props.onRevoke}>Regenerate link</button>
-          </div>
+          {canRole(props.role, 'head_coach') && (
+            <div className="row">
+              <button onClick={props.onUnpublish}>Unpublish</button>
+              <button onClick={props.onRevoke}>Regenerate link</button>
+            </div>
+          )}
           <p>
             <small>Regenerating the link kills the old one — anyone with the old link can no longer watch.</small>
           </p>
@@ -1402,7 +1442,9 @@ function GameDetailScreen(props: {
       ) : (
         <>
           <p>Not published — the watch link only works after you publish this game.</p>
-          <button onClick={props.onPublish}>Publish watch link</button>
+          {canRole(props.role, 'head_coach') && (
+            <button onClick={props.onPublish}>Publish watch link</button>
+          )}
         </>
       )}
 
@@ -1416,27 +1458,29 @@ function GameDetailScreen(props: {
         </p>
       )}
       <div className="row">
-        <button
-          disabled={!props.game.published || smsBusy}
-          onClick={async () => {
-            setSmsBusy(true);
-            setSmsResult('');
-            setSmsError('');
-            try {
-              const summary = await api.notifyHighlights(props.game.id);
-              setSmsResult(
-                `Highlights alerts: ${summary.attempted} attempted — ${summary.sent} sent, ${summary.logged} recorded (Twilio not configured), ${summary.failed} failed.`,
-              );
-              await loadSmsLog();
-            } catch (e) {
-              setSmsError(e instanceof Error ? e.message : 'Highlights alerts failed');
-            } finally {
-              setSmsBusy(false);
-            }
-          }}
-        >
-          {smsBusy ? 'Sending…' : 'Notify families (highlights ready)'}
-        </button>
+        {canRole(props.role, 'head_coach') && (
+          <button
+            disabled={!props.game.published || smsBusy}
+            onClick={async () => {
+              setSmsBusy(true);
+              setSmsResult('');
+              setSmsError('');
+              try {
+                const summary = await api.notifyHighlights(props.game.id);
+                setSmsResult(
+                  `Highlights alerts: ${summary.attempted} attempted — ${summary.sent} sent, ${summary.logged} recorded (Twilio not configured), ${summary.failed} failed.`,
+                );
+                await loadSmsLog();
+              } catch (e) {
+                setSmsError(e instanceof Error ? e.message : 'Highlights alerts failed');
+              } finally {
+                setSmsBusy(false);
+              }
+            }}
+          >
+            {smsBusy ? 'Sending…' : 'Notify families (highlights ready)'}
+          </button>
+        )}
       </div>
       {smsResult && <p>{smsResult}</p>}
       {smsError && <p className="error">{smsError}</p>}
@@ -1456,92 +1500,100 @@ function GameDetailScreen(props: {
       )}
 
       <h3>Auto Reel</h3>
-      <p>
-        One tap builds a draft reel from this game&apos;s highlights (best plays first) and opens it
-        in Reel Studio for tweaking.
-      </p>
-      <div className="row">
-        <select value={autoPreset} onChange={(e) => setAutoPreset(e.target.value as 'hype' | 'clean' | 'simple')}>
-          <option value="hype">Hype — fades + overlays</option>
-          <option value="clean">Clean — cuts + overlays</option>
-          <option value="simple">Simple — cuts, no overlays</option>
-        </select>
-        <button
-          disabled={autoBusy}
-          onClick={async () => {
-            setAutoBusy(true);
-            setAutoError('');
-            try {
-              await props.onAutoReel(autoPreset);
-            } catch (e) {
-              setAutoError(e instanceof Error ? e.message : 'Auto Reel failed');
-            } finally {
-              setAutoBusy(false);
-            }
-          }}
-        >
-          {autoBusy ? 'Building…' : 'Auto Reel'}
-        </button>
-      </div>
-      {autoError && <p className="error">{autoError}</p>}
+      {canRole(props.role, 'head_coach') && (
+        <>
+          <p>
+            One tap builds a draft reel from this game&apos;s highlights (best plays first) and opens it
+            in Reel Studio for tweaking.
+          </p>
+          <div className="row">
+            <select value={autoPreset} onChange={(e) => setAutoPreset(e.target.value as 'hype' | 'clean' | 'simple')}>
+              <option value="hype">Hype — fades + overlays</option>
+              <option value="clean">Clean — cuts + overlays</option>
+              <option value="simple">Simple — cuts, no overlays</option>
+            </select>
+            <button
+              disabled={autoBusy}
+              onClick={async () => {
+                setAutoBusy(true);
+                setAutoError('');
+                try {
+                  await props.onAutoReel(autoPreset);
+                } catch (e) {
+                  setAutoError(e instanceof Error ? e.message : 'Auto Reel failed');
+                } finally {
+                  setAutoBusy(false);
+                }
+              }}
+            >
+              {autoBusy ? 'Building…' : 'Auto Reel'}
+            </button>
+          </div>
+          {autoError && <p className="error">{autoError}</p>}
+        </>
+      )}
 
-      <h3>Export</h3>
-      <p>
-        Export this game&apos;s box score + timeline to a Google Sheet, or download the same data
-        as a CSV — the CSV always works, with or without Google configured.
-      </p>
-      <div className="row">
-        <button
-          disabled={sheetBusy}
-          onClick={async () => {
-            setSheetBusy(true);
-            setSheetResult('');
-            setSheetError('');
-            try {
-              const result = await api.exportToSheets(props.game.id);
-              if (result.notConfigured) {
-                setSheetResult(
-                  'Google Sheets is not configured yet — set the Google service-account env vars on the server, then try again. (The CSV download below works right now.)',
-                );
-              } else {
-                setSheetResult(`Exported to Google Sheets.`);
-                setSheetExports((prev) => [
-                  {
-                    id: `new-${Date.now()}`,
-                    game_id: props.game.id,
-                    sheet_id: result.sheetId ?? '',
-                    sheet_url: result.sheetUrl ?? '',
-                    created_at: new Date().toISOString(),
-                  },
-                  ...prev,
-                ]);
-              }
-            } catch (e) {
-              setSheetError(e instanceof Error ? e.message : 'Google Sheets export failed');
-            } finally {
-              setSheetBusy(false);
-            }
-          }}
-        >
-          {sheetBusy ? 'Exporting…' : 'Export to Google Sheets'}
-        </button>
-        <button type="button" onClick={downloadCsv}>
-          Download CSV
-        </button>
-      </div>
-      {sheetResult && <p>{sheetResult}</p>}
-      {sheetError && <p className="error">{sheetError}</p>}
-      {sheetExports.length > 0 && (
-        <ul className="list">
-          {sheetExports.map((x) => (
-            <li key={x.id}>
-              <a href={x.sheet_url} target="_blank" rel="noreferrer">
-                Open Sheet
-              </a>{' '}
-              · {new Date(x.created_at).toLocaleString()}
-            </li>
-          ))}
-        </ul>
+      {canRole(props.role, 'head_coach') && (
+        <>
+          <h3>Export</h3>
+          <p>
+            Export this game&apos;s box score + timeline to a Google Sheet, or download the same data
+            as a CSV — the CSV always works, with or without Google configured.
+          </p>
+          <div className="row">
+            <button
+              disabled={sheetBusy}
+              onClick={async () => {
+                setSheetBusy(true);
+                setSheetResult('');
+                setSheetError('');
+                try {
+                  const result = await api.exportToSheets(props.game.id);
+                  if (result.notConfigured) {
+                    setSheetResult(
+                      'Google Sheets is not configured yet — set the Google service-account env vars on the server, then try again. (The CSV download below works right now.)',
+                    );
+                  } else {
+                    setSheetResult(`Exported to Google Sheets.`);
+                    setSheetExports((prev) => [
+                      {
+                        id: `new-${Date.now()}`,
+                        game_id: props.game.id,
+                        sheet_id: result.sheetId ?? '',
+                        sheet_url: result.sheetUrl ?? '',
+                        created_at: new Date().toISOString(),
+                      },
+                      ...prev,
+                    ]);
+                  }
+                } catch (e) {
+                  setSheetError(e instanceof Error ? e.message : 'Google Sheets export failed');
+                } finally {
+                  setSheetBusy(false);
+                }
+              }}
+            >
+              {sheetBusy ? 'Exporting…' : 'Export to Google Sheets'}
+            </button>
+            <button type="button" onClick={downloadCsv}>
+              Download CSV
+            </button>
+          </div>
+          {sheetResult && <p>{sheetResult}</p>}
+          {sheetError && <p className="error">{sheetError}</p>}
+          {sheetExports.length > 0 && (
+            <ul className="list">
+              {sheetExports.map((x) => (
+                <li key={x.id}>
+                  <a href={x.sheet_url} target="_blank" rel="noreferrer">
+                    Open Sheet
+                  </a>{' '}
+                  · {new Date(x.created_at).toLocaleString()}
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
       )}
 
       <h3>Post-Game Analysis</h3>
@@ -1592,71 +1644,75 @@ function GameDetailScreen(props: {
                           <small>Note: {section.note}</small>
                         </p>
                       )}
-                      <button
-                        type="button"
-                        disabled={analysisBusyKey === section.key}
-                        onClick={async () => {
-                          setAnalysisBusyKey(section.key);
-                          setAnalysisError('');
-                          try {
-                            setAnalysis(await api.unverifyAnalysisSection(props.game.id, section.key));
-                          } catch (e) {
-                            setAnalysisError(e instanceof Error ? e.message : 'Unverify failed');
-                          } finally {
-                            setAnalysisBusyKey(null);
-                          }
-                        }}
-                      >
-                        {analysisBusyKey === section.key ? 'Working…' : 'Unverify'}
-                      </button>
+                      {canRole(props.role, 'assistant') && (
+                        <button
+                          type="button"
+                          disabled={analysisBusyKey === section.key}
+                          onClick={async () => {
+                            setAnalysisBusyKey(section.key);
+                            setAnalysisError('');
+                            try {
+                              setAnalysis(await api.unverifyAnalysisSection(props.game.id, section.key));
+                            } catch (e) {
+                              setAnalysisError(e instanceof Error ? e.message : 'Unverify failed');
+                            } finally {
+                              setAnalysisBusyKey(null);
+                            }
+                          }}
+                        >
+                          {analysisBusyKey === section.key ? 'Working…' : 'Unverify'}
+                        </button>
+                      )}
                     </>
                   ) : (
-                    <div className="row">
-                      <input
-                        placeholder="Correction (optional)"
-                        value={inputs.correction}
-                        onChange={(e) =>
-                          setAnalysisInputs((prev) => ({
-                            ...prev,
-                            [section.key]: { ...inputs, correction: e.target.value },
-                          }))
-                        }
-                      />
-                      <input
-                        placeholder="Note (optional)"
-                        value={inputs.note}
-                        onChange={(e) =>
-                          setAnalysisInputs((prev) => ({
-                            ...prev,
-                            [section.key]: { ...inputs, note: e.target.value },
-                          }))
-                        }
-                      />
-                      <button
-                        type="button"
-                        disabled={analysisBusyKey === section.key}
-                        onClick={async () => {
-                          setAnalysisBusyKey(section.key);
-                          setAnalysisError('');
-                          try {
-                            setAnalysis(
-                              await api.verifyAnalysisSection(
-                                props.game.id,
-                                section.key,
-                                inputs.correction,
-                                inputs.note,
-                              ),
-                            );
-                          } catch (e) {
-                            setAnalysisError(e instanceof Error ? e.message : 'Verify failed');
-                          } finally {
-                            setAnalysisBusyKey(null);
+                    canRole(props.role, 'assistant') && (
+                      <div className="row">
+                        <input
+                          placeholder="Correction (optional)"
+                          value={inputs.correction}
+                          onChange={(e) =>
+                            setAnalysisInputs((prev) => ({
+                              ...prev,
+                              [section.key]: { ...inputs, correction: e.target.value },
+                            }))
                           }
-                        }}
-                      >
-                        {analysisBusyKey === section.key ? 'Working…' : 'Verify'}
-                      </button>
-                    </div>
+                        />
+                        <input
+                          placeholder="Note (optional)"
+                          value={inputs.note}
+                          onChange={(e) =>
+                            setAnalysisInputs((prev) => ({
+                              ...prev,
+                              [section.key]: { ...inputs, note: e.target.value },
+                            }))
+                          }
+                        />
+                        <button
+                          type="button"
+                          disabled={analysisBusyKey === section.key}
+                          onClick={async () => {
+                            setAnalysisBusyKey(section.key);
+                            setAnalysisError('');
+                            try {
+                              setAnalysis(
+                                await api.verifyAnalysisSection(
+                                  props.game.id,
+                                  section.key,
+                                  inputs.correction,
+                                  inputs.note,
+                                ),
+                              );
+                            } catch (e) {
+                              setAnalysisError(e instanceof Error ? e.message : 'Verify failed');
+                            } finally {
+                              setAnalysisBusyKey(null);
+                            }
+                          }}
+                        >
+                          {analysisBusyKey === section.key ? 'Working…' : 'Verify'}
+                        </button>
+                      </div>
+                    )
                   )}
                 </li>
               );
@@ -1799,7 +1855,7 @@ function ProfileHighlights({ stats }: { stats: PlayerProfileStats }) {
  * stats (read-only), highlight events with video-timestamp links, and
  * publish controls using the same token model as game watch links.
  */
-function PlayerProfileScreen(props: { player: Player | undefined; onBack: () => void }) {
+function PlayerProfileScreen(props: { role: ClientRole; player: Player | undefined; onBack: () => void }) {
   const [data, setData] = useState<{
     player: Player;
     profile: PlayerProfile | null;
@@ -1881,54 +1937,72 @@ function PlayerProfileScreen(props: { player: Player | undefined; onBack: () => 
       {saved && <p>Profile saved.</p>}
 
       <h3>Bio & measurables</h3>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          run(async () => {
-            await api.updatePlayerProfile(player.id, {
-              bio,
-              height,
-              graduation_year: graduationYear,
-              positions_text: positionsText,
-              school,
-              club_team: clubTeam,
+      {canRole(props.role, 'head_coach') ? (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            run(async () => {
+              await api.updatePlayerProfile(player.id, {
+                bio,
+                height,
+                graduation_year: graduationYear,
+                positions_text: positionsText,
+                school,
+                club_team: clubTeam,
+              });
+              setSaved(true);
             });
-            setSaved(true);
-          });
-        }}
-      >
-        <div className="row">
-          <label className="field-label">
-            Bio
-            <textarea value={bio} onChange={(e) => setBio(e.target.value)} maxLength={2000} rows={4} className="wide" />
-          </label>
-        </div>
-        <div className="row">
-          <label className="field-label">
-            Height
-            <input value={height} onChange={(e) => setHeight(e.target.value)} maxLength={100} placeholder="e.g. 5'10&quot;" />
-          </label>
-          <label className="field-label">
-            Graduation year
-            <input value={graduationYear} onChange={(e) => setGraduationYear(e.target.value)} maxLength={100} placeholder="e.g. 2027" />
-          </label>
-          <label className="field-label">
-            Positions
-            <input value={positionsText} onChange={(e) => setPositionsText(e.target.value)} maxLength={100} placeholder="e.g. Outside Hitter / DS" />
-          </label>
-        </div>
-        <div className="row">
-          <label className="field-label">
-            School
-            <input value={school} onChange={(e) => setSchool(e.target.value)} maxLength={100} />
-          </label>
-          <label className="field-label">
-            Club team
-            <input value={clubTeam} onChange={(e) => setClubTeam(e.target.value)} maxLength={100} />
-          </label>
-        </div>
-        <button type="submit">Save profile</button>
-      </form>
+          }}
+        >
+          <div className="row">
+            <label className="field-label">
+              Bio
+              <textarea value={bio} onChange={(e) => setBio(e.target.value)} maxLength={2000} rows={4} className="wide" />
+            </label>
+          </div>
+          <div className="row">
+            <label className="field-label">
+              Height
+              <input value={height} onChange={(e) => setHeight(e.target.value)} maxLength={100} placeholder="e.g. 5'10&quot;" />
+            </label>
+            <label className="field-label">
+              Graduation year
+              <input value={graduationYear} onChange={(e) => setGraduationYear(e.target.value)} maxLength={100} placeholder="e.g. 2027" />
+            </label>
+            <label className="field-label">
+              Positions
+              <input value={positionsText} onChange={(e) => setPositionsText(e.target.value)} maxLength={100} placeholder="e.g. Outside Hitter / DS" />
+            </label>
+          </div>
+          <div className="row">
+            <label className="field-label">
+              School
+              <input value={school} onChange={(e) => setSchool(e.target.value)} maxLength={100} />
+            </label>
+            <label className="field-label">
+              Club team
+              <input value={clubTeam} onChange={(e) => setClubTeam(e.target.value)} maxLength={100} />
+            </label>
+          </div>
+          <button type="submit">Save profile</button>
+        </form>
+      ) : (
+        <>
+          {bio && (
+            <p>{bio}</p>
+          )}
+          <ul>
+            {height && <li>Height: {height}</li>}
+            {graduationYear && <li>Graduation year: {graduationYear}</li>}
+            {positionsText && <li>Positions: {positionsText}</li>}
+            {school && <li>School: {school}</li>}
+            {clubTeam && <li>Club team: {clubTeam}</li>}
+          </ul>
+          {!bio && !height && !graduationYear && !positionsText && !school && !clubTeam && (
+            <p>No bio or measurables yet.</p>
+          )}
+        </>
+      )}
 
       {data && (
         <>
@@ -1971,13 +2045,15 @@ function PlayerProfileScreen(props: { player: Player | undefined; onBack: () => 
             </button>
           </div>
           <div className="row">
-            <button
-              onClick={() => run(async () => {
-                await api.generateEnrollToken(player.id);
-              })}
-            >
-              Regenerate link
-            </button>
+            {canRole(props.role, 'head_coach') && (
+              <button
+                onClick={() => run(async () => {
+                  await api.generateEnrollToken(player.id);
+                })}
+              >
+                Regenerate link
+              </button>
+            )}
           </div>
           <p>
             <small>Regenerating the link kills the old one.</small>
@@ -1986,13 +2062,15 @@ function PlayerProfileScreen(props: { player: Player | undefined; onBack: () => 
       ) : (
         <>
           <p>No enrollment link yet.</p>
-          <button
-            onClick={() => run(async () => {
-              await api.generateEnrollToken(player.id);
-            })}
-          >
-            Create enrollment link
-          </button>
+          {canRole(props.role, 'head_coach') && (
+            <button
+              onClick={() => run(async () => {
+                await api.generateEnrollToken(player.id);
+              })}
+            >
+              Create enrollment link
+            </button>
+          )}
         </>
       )}
       <h4>Enrolled contacts</h4>
@@ -2004,13 +2082,15 @@ function PlayerProfileScreen(props: { player: Player | undefined; onBack: () => 
             <li key={c.id}>
               {c.display_name ? `${c.display_name} — ` : ''}
               {c.masked_phone} {c.opted_in ? '(opted in)' : '(opted out)'}{' '}
-              <button
-                onClick={() => run(async () => {
-                  await api.removeFamily(c.id);
-                })}
-              >
-                Remove
-              </button>
+              {canRole(props.role, 'head_coach') && (
+                <button
+                  onClick={() => run(async () => {
+                    await api.removeFamily(c.id);
+                  })}
+                >
+                  Remove
+                </button>
+              )}
             </li>
           ))}
         </ul>
@@ -2046,8 +2126,12 @@ function PlayerProfileScreen(props: { player: Player | undefined; onBack: () => 
             </button>
           </div>
           <div className="row">
-            <button onClick={() => run(() => api.unpublishProfile(player.id))}>Unpublish</button>
-            <button onClick={() => run(() => api.revokeProfileLink(player.id))}>Regenerate link</button>
+            {canRole(props.role, 'head_coach') && (
+              <>
+                <button onClick={() => run(() => api.unpublishProfile(player.id))}>Unpublish</button>
+                <button onClick={() => run(() => api.revokeProfileLink(player.id))}>Regenerate link</button>
+              </>
+            )}
           </div>
           <p>
             <small>Regenerating the link kills the old one — anyone with the old link can no longer view the profile.</small>
@@ -2056,7 +2140,9 @@ function PlayerProfileScreen(props: { player: Player | undefined; onBack: () => 
       ) : (
         <>
           <p>Not published — the profile link only works after you publish it.</p>
-          <button onClick={() => run(() => api.publishProfile(player.id))}>Publish profile link</button>
+          {canRole(props.role, 'head_coach') && (
+            <button onClick={() => run(() => api.publishProfile(player.id))}>Publish profile link</button>
+          )}
         </>
       )}
     </section>
@@ -2299,6 +2385,7 @@ function WatchPage({ token }: { token: string }) {
  * on Game Detail (it needs a game); this screen is the library.
  */
 function ReelsListScreen(props: {
+  role: ClientRole;
   games: Game[];
   teams: import('./types').Team[];
   onOpen: (reelId: string) => void;
@@ -2350,21 +2437,23 @@ function ReelsListScreen(props: {
     <section>
       <h2>Reels</h2>
       {error && <p className="error">{error}</p>}
-      <form onSubmit={handleCreate} className="row">
-        <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="New reel name (optional)" />
-        <select value={newGameId} onChange={(e) => setNewGameId(e.target.value)}>
-          <option value="">No source game</option>
-          {props.games.map((g) => {
-            const team = props.teams.find((t) => t.id === g.team_id);
-            return (
-              <option key={g.id} value={g.id}>
-                {team?.name ?? 'Team'} vs {g.opponent || 'TBD'}
-              </option>
-            );
-          })}
-        </select>
-        <button type="submit">Create reel</button>
-      </form>
+      {canRole(props.role, 'head_coach') && (
+        <form onSubmit={handleCreate} className="row">
+          <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="New reel name (optional)" />
+          <select value={newGameId} onChange={(e) => setNewGameId(e.target.value)}>
+            <option value="">No source game</option>
+            {props.games.map((g) => {
+              const team = props.teams.find((t) => t.id === g.team_id);
+              return (
+                <option key={g.id} value={g.id}>
+                  {team?.name ?? 'Team'} vs {g.opponent || 'TBD'}
+                </option>
+              );
+            })}
+          </select>
+          <button type="submit">Create reel</button>
+        </form>
+      )}
       {reels.length === 0 ? (
         <p>
           No reels yet. Create one here, or use <strong>Auto Reel</strong> on a game&apos;s detail
@@ -2381,8 +2470,12 @@ function ReelsListScreen(props: {
                 {r.music_track || 'No music'} · {r.status}
                 {game ? ` · ${team?.name ?? 'Team'} vs ${game.opponent || 'TBD'}` : ''}
                 {' '}
-                <button onClick={() => props.onOpen(r.id)}>Open in Studio</button>{' '}
-                <button onClick={() => handleDelete(r.id)}>Delete</button>
+                {canRole(props.role, 'head_coach') && (
+                  <>
+                    <button onClick={() => props.onOpen(r.id)}>Open in Studio</button>{' '}
+                    <button onClick={() => handleDelete(r.id)}>Delete</button>
+                  </>
+                )}
               </li>
             );
           })}
@@ -2412,7 +2505,7 @@ const MUSIC_TRACK_OPTIONS = [
  * source video at its timestamp — it does not render a combined file.
  * Export is a placeholder: no real MP4 is produced in this build.
  */
-function ReelStudioScreen(props: { reelId: string; workspace: Workspace; onBack: () => void }) {
+function ReelStudioScreen(props: { role: ClientRole; reelId: string; workspace: Workspace; onBack: () => void }) {
   const [reel, setReel] = useState<ReelProject | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -2463,6 +2556,16 @@ function ReelStudioScreen(props: { reelId: string; workspace: Workspace; onBack:
 
   if (loading) return <section><p>Loading reel…</p></section>;
   if (!reel) return <section><button onClick={props.onBack}>← Reels</button><p className="error">{error || 'Reel not found.'}</p></section>;
+  // Defense-in-depth: the studio is only reachable via UI for
+  // head_coach+, but a lower role landing here gets a note, not the editor.
+  if (!canRole(props.role, 'head_coach')) {
+    return (
+      <section>
+        <button onClick={props.onBack}>← Reels</button>
+        <p>Your role does not allow editing reels.</p>
+      </section>
+    );
+  }
 
   // Non-null alias: TS narrowing from the guard above does not carry
   // into the async handler closures below, so bind it explicitly.
