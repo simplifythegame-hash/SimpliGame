@@ -40,7 +40,11 @@ export function buildGameCsv(
     const player = players.find((p) => p.id === e.player_id);
     const entry = byPlayer.get(e.player_id) ?? { name: player?.name ?? 'Unknown', stats: {}, points: 0 };
     entry.stats[e.stat_type] = (entry.stats[e.stat_type] ?? 0) + 1;
-    entry.points += e.points;
+    // Our-side points only — an opponent-side point (e.g. our Serve
+    // Error) is the opponent's point, not this player's.
+    if (e.side === 'ours') {
+      entry.points += e.points;
+    }
     byPlayer.set(e.player_id, entry);
   }
   const boxScore = [...byPlayer.values()];
