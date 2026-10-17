@@ -375,4 +375,27 @@ export const api = {
     const data = await parseJson(await fetch(`/api/games/${gameId}/exports`));
     return data.exports as import('./types').SheetExport[];
   },
+
+  async getAnalysis(gameId: string) {
+    const data = await parseJson(await fetch(`/api/games/${gameId}/analysis`));
+    return data as import('./types').GameAnalysis;
+  },
+
+  async verifyAnalysisSection(gameId: string, key: string, correction: string, note: string) {
+    const data = await parseJson(
+      await fetch(`/api/games/${gameId}/analysis/sections/${key}/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ correction, note }),
+      }),
+    );
+    return data as import('./types').GameAnalysis;
+  },
+
+  async unverifyAnalysisSection(gameId: string, key: string) {
+    const data = await parseJson(
+      await fetch(`/api/games/${gameId}/analysis/sections/${key}/unverify`, { method: 'POST' }),
+    );
+    return data as import('./types').GameAnalysis;
+  },
 };
