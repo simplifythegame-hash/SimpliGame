@@ -448,6 +448,14 @@ export default function App() {
           players={workspace.players.filter((p) => p.team_id === currentGame.team_id)}
           lineupPlayerIds={workspace.lineups.filter((l) => l.game_id === currentGame.id).map((l) => l.player_id)}
           events={workspace.events.filter((e) => e.game_id === currentGame.id)}
+          youtubeUrl={youtubeUrl}
+          onYoutubeUrlChange={setYoutubeUrl}
+          onSaveYouTube={async () => {
+            await run(async () => {
+              await api.saveYouTube(currentGame.id, youtubeUrl);
+              setYoutubeUrl('');
+            });
+          }}
           selectedPlayerId={selectedPlayerId}
           onSelectPlayer={setSelectedPlayerId}
           onLogEvent={handleLogEvent}
@@ -1557,6 +1565,9 @@ function LiveGameScreen(props: {
   players: Player[];
   lineupPlayerIds: string[];
   events: { player_id: string | null; stat_type: string; points: number; side: string }[];
+  youtubeUrl: string;
+  onYoutubeUrlChange: (v: string) => void;
+  onSaveYouTube: () => void;
   selectedPlayerId: string | null;
   onSelectPlayer: (id: string) => void;
   onLogEvent: (stat: { label: string; points: number }) => void;
@@ -1583,6 +1594,8 @@ function LiveGameScreen(props: {
   const [subMode, setSubMode] = useState(false);
   const [subOut, setSubOut] = useState<string | null>(null);
   const [subIn, setSubIn] = useState<string | null>(null);
+  // YouTube dropdown under the video: collapsed by default.
+  const [youtubeOpen, setYoutubeOpen] = useState(false);
 
   function exitSubMode() {
     setSubMode(false);
@@ -1599,6 +1612,21 @@ function LiveGameScreen(props: {
   const subOutPlayer = props.players.find((p) => p.id === subOut);
   const subInPlayer = props.players.find((p) => p.id === subIn);
 
+  // Box score: per-player counts by stat type, plus points — same
+  // computation as Game Detail, so both screens always agree.
+  const boxScore = useMemo(() => {
+    const byPlayer = new Map<string, { name: string; stats: Record<string, number>; points: number }>();
+    for (const e of props.events) {
+      if (!e.player_id) continue;
+      const player = props.players.find((p) => p.id === e.player_id);
+      const entry = byPlayer.get(e.player_id) ?? { name: player?.name ?? 'Unknown', stats: {}, points: 0 };
+      entry.stats[e.stat_type] = (entry.stats[e.stat_type] ?? 0) + 1;
+      entry.points += e.points;
+      byPlayer.set(e.player_id, entry);
+    }
+    return [...byPlayer.values()];
+  }, [props.events, props.players]);
+
   // Role gates (server enforces; the client only hides what the role
   // may not do): stat crew tags stats + undo only — no subs, no Go Live
   // / End Game.
@@ -1608,36 +1636,48 @@ function LiveGameScreen(props: {
     <section>
       <button onClick={props.onBack}>← All games</button>{' '}
       <button onClick={props.onDetail}>Game detail</button>
-      <h2>
-        Live — vs {props.game.opponent || 'TBD'} · {props.game.period_label}
-      </h2>
-      <p className="score">
-        Us {props.game.our_score} — {props.game.opponent_score} Them
-      </p>
-      <p>
-        Status: <strong>{props.game.status}</strong>
-      </p>
-      <div className="row">
-        {canAssistant && props.game.status === 'draft' && (
-          <button onClick={() => props.onSetStatus('live')}>Go Live</button>
-        )}
-        {canAssistant && props.game.status === 'live' && (
-          <button onClick={() => props.onSetStatus('final')}>End Game</button>
-        )}
-        {props.game.status === 'final' && <span>Final — this game is closed.</span>}
-      </div>
-      {props.game.status === 'draft' && !props.game.published && (
-        <p>
-          <small>Publish first to text families the watch link when you go live.</small>
-        </p>
-      )}
-      {props.game.status === 'draft' && props.game.published && (
-        <p>
-          <small>Families get the watch link by text the moment you go live.</small>
-        </p>
-      )}
 
-      <h3>Video</h3>
+      {/* 1. Matchup header ABOVE the video: teams + live score + status. */}
+      <div className="live-matchup">
+        <div className="live-matchup-row">
+          <span className="live-matchup-team">{props.teamName}</span>
+          <span className="live-matchup-score">
+            {props.game.our_score} — {props.game.opponent_score}
+          </span>
+          <span className="live-matchup-team">{props.game.opponent || 'TBD'}</span>
+        </div>
+        <div className="live-matchup-meta">
+          {props.game.status === 'live' && <span className="live-badge">● LIVE</span>}
+          {props.game.status === 'draft' && (
+            <span className="live-badge live-badge-upcoming">Upcoming</span>
+          )}
+          {props.game.status === 'final' && (
+            <span className="live-badge live-badge-final">Final</span>
+          )}
+          <span className="sub-hint">{props.game.period_label}</span>
+        </div>
+        <div className="row">
+          {canAssistant && props.game.status === 'draft' && (
+            <button onClick={() => props.onSetStatus('live')}>Go Live</button>
+          )}
+          {canAssistant && props.game.status === 'live' && (
+            <button onClick={() => props.onSetStatus('final')}>End Game</button>
+          )}
+          {props.game.status === 'final' && <span>Final — this game is closed.</span>}
+        </div>
+        {props.game.status === 'draft' && !props.game.published && (
+          <p>
+            <small>Publish first to text families the watch link when you go live.</small>
+          </p>
+        )}
+        {props.game.status === 'draft' && props.game.published && (
+          <p>
+            <small>Families get the watch link by text the moment you go live.</small>
+          </p>
+        )}
+      </div>
+
+      {/* 2. Video screen directly under the matchup header. */}
       {props.game.youtube_video_id ? (
         <YouTubePlayer videoId={props.game.youtube_video_id} isLive={props.game.status === 'live'} />
       ) : (
@@ -1646,6 +1686,38 @@ function LiveGameScreen(props: {
           subtitle={`${props.game.status === 'live' ? 'Live now' : props.game.status === 'final' ? 'Final' : 'Upcoming'} · ${props.game.period_label}`}
           status={props.game.status === 'live' ? 'Waiting for stream' : 'No video loaded yet'}
         />
+      )}
+
+      {/* 3. YouTube link as a dropdown UNDER the video — TEMPORARY until
+          YouTube auto-starts on Go Live. Same attach logic, rehoused. */}
+      {canRole(props.role, 'head_coach') && (
+        <div className="youtube-dropdown">
+          <button
+            type="button"
+            className="youtube-dropdown-toggle"
+            aria-expanded={youtubeOpen}
+            onClick={() => setYoutubeOpen((o) => !o)}
+          >
+            Add YouTube link {youtubeOpen ? '▴' : '▾'}
+          </button>
+          {youtubeOpen && (
+            <form
+              className="row"
+              onSubmit={(e) => {
+                e.preventDefault();
+                props.onSaveYouTube();
+              }}
+            >
+              <input
+                value={props.youtubeUrl}
+                onChange={(e) => props.onYoutubeUrlChange(e.target.value)}
+                placeholder="Paste YouTube link or video ID"
+                className="wide"
+              />
+              <button type="submit">Save video</button>
+            </form>
+          )}
+        </div>
       )}
 
       <h3>On court — tap a player, then tap a stat</h3>
@@ -1737,7 +1809,31 @@ function LiveGameScreen(props: {
         </ul>
       )}
 
-      <h3>Recent events</h3>
+      <h3>Box score</h3>
+      {boxScore.length === 0 ? (
+        <p>No events logged yet.</p>
+      ) : (
+        <table className="boxscore">
+          <thead>
+            <tr>
+              <th>Player</th>
+              <th>Points</th>
+              <th>Stats</th>
+            </tr>
+          </thead>
+          <tbody>
+            {boxScore.map((row) => (
+              <tr key={row.name}>
+                <td>{row.name}</td>
+                <td>{row.points}</td>
+                <td>{Object.entries(row.stats).map(([k, v]) => `${k}: ${v}`).join(' · ')}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <h3>Timeline</h3>
       <ul className="list">
         {[...props.events].reverse().slice(0, 10).map((e, i) => (
           <li key={i}>
