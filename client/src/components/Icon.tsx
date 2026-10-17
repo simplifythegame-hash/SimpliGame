@@ -46,7 +46,9 @@ export type IconName =
   | 'refresh'
   | 'trash'
   | 'back'
-  | 'send';
+  | 'send'
+  // AI Vision
+  | 'ai';
 
 const PATHS: Record<IconName, React.ReactNode> = {
   // --- Sidebar tabs ---
@@ -246,6 +248,17 @@ const PATHS: Record<IconName, React.ReactNode> = {
     <>
       <path d="M22 2L11 13" />
       <path d="M22 2l-7 20-4-9-9-4 20-7z" />
+    </>
+  ),
+  // AI Vision: a scan frame + eye — the worker watches the video,
+  // the coach makes the call.
+  ai: (
+    <>
+      <path d="M3 7V5a2 2 0 0 1 2-2h2" />
+      <path d="M17 3h2a2 2 0 0 1 2 2v2" />
+      <path d="M21 17v2a2 2 0 0 1-2 2h-2" />
+      <path d="M7 21H5a2 2 0 0 1-2-2v-2" />
+      <circle cx="12" cy="12" r="3" />
     </>
   ),
 };
