@@ -102,6 +102,9 @@ export interface PublicWatch {
   youtube_video_id: string | null;
   events: PublicWatchEvent[];
   boxScore: PublicWatchBoxRow[];
+  /** Org brand colors — the public page wears the club's colors. */
+  primary_color: string;
+  secondary_color: string;
 }
 
 /** Recruiting profile: coach-editable bio + measurables, publish token
@@ -239,6 +242,9 @@ export interface PublicProfile {
   school: string;
   club_team: string;
   stats: PlayerProfileStats;
+  /** Org brand colors — the public page wears the club's colors. */
+  primary_color: string;
+  secondary_color: string;
 }
 
 /** Logged-in user: owner sees all teams; coaches see assigned teams.
