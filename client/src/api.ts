@@ -398,4 +398,76 @@ export const api = {
     );
     return data as import('./types').GameAnalysis;
   },
+
+  // ------------------------------------------- auth + coaches
+  async getAuthStatus() {
+    const data = await parseJson(await fetch('/api/auth/status'));
+    return data as { usersExist: boolean; authUnavailable?: boolean };
+  },
+
+  /** Current session user, or user: null when not logged in (no throw). */
+  async getMe() {
+    const res = await fetch('/api/auth/me');
+    if (res.status === 401) return { user: null, teamIds: [] as string[] };
+    const data = await parseJson(res);
+    return data as { user: import('./types').AuthUser; teamIds: string[] | null };
+  },
+
+  async login(email: string, password: string) {
+    const data = await parseJson(
+      await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      }),
+    );
+    return data.user as import('./types').AuthUser;
+  },
+
+  /** One-time owner bootstrap — works only when zero users exist. */
+  async setup(name: string, email: string, password: string) {
+    const data = await parseJson(
+      await fetch('/api/auth/setup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, email, password }),
+      }),
+    );
+    return data.user as import('./types').AuthUser;
+  },
+
+  async logout() {
+    await parseJson(await fetch('/api/auth/logout', { method: 'POST' }));
+  },
+
+  async listCoaches() {
+    const data = await parseJson(await fetch('/api/coaches'));
+    return data.coaches as import('./types').Coach[];
+  },
+
+  async createCoach(body: { name: string; email: string; password: string; role: string; teamIds: string[] }) {
+    const data = await parseJson(
+      await fetch('/api/coaches', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    );
+    return data.coach as import('./types').Coach;
+  },
+
+  async updateCoach(id: string, body: { name?: string; role?: string; teamIds?: string[] }) {
+    const data = await parseJson(
+      await fetch(`/api/coaches/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    );
+    return data.coach as import('./types').Coach;
+  },
+
+  async deleteCoach(id: string) {
+    await parseJson(await fetch(`/api/coaches/${id}`, { method: 'DELETE' }));
+  },
 };
