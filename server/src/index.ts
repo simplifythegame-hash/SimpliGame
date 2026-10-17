@@ -1,6 +1,28 @@
 import crypto from 'crypto';
 import express from 'express';
 import path from 'path';
+import {
+  authenticate,
+  authOf,
+  canAccessTeam,
+  cleanEmail,
+  cleanName,
+  cleanPassword,
+  cleanTeamIds,
+  clearSessionCookie,
+  dummyPasswordCheck,
+  hashPassword,
+  hashSessionToken,
+  isMissingTable,
+  newSessionToken,
+  NON_OWNER_ROLES,
+  publicUser,
+  requireAuth,
+  requireOwner,
+  sessionCookieValue,
+  verifyPassword,
+  type NonOwnerRole,
+} from './auth';
 import { getOrCreateOrganization, getPool } from './db';
 import {
   applyReview,
@@ -15,6 +37,25 @@ import { extractYouTubeVideoId } from './youtube';
 
 const app = express();
 app.use(express.json());
+
+// Auth: `authenticate` runs on every /api route and attaches req.auth
+// when the request carries a valid session cookie. The gate below then
+// enforces login for everything except the public routes — public watch
+// / profile / enroll pages, the health check, and the auth endpoints
+// themselves (which handle their own auth).
+app.use('/api', authenticate);
+app.use('/api', (req, res, next) => {
+  const path = req.path;
+  if (
+    path === '/health' ||
+    path.startsWith('/public/') ||
+    path.startsWith('/auth/')
+  ) {
+    next();
+    return;
+  }
+  requireAuth(req, res, next);
+});
 
 /**
  * Small async wrapper: any unexpected error inside a handler becomes a
@@ -36,13 +77,389 @@ function asyncHandler(
 // ---------------------------------------------------------------- health
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
+// ------------------------------------------------------------------ auth
+// Coach logins. Sessions are opaque tokens in an HttpOnly cookie; the
+// token itself is never stored, only its SHA-256 hash.
+// Setup is a one-time bootstrap: it works ONLY when zero users exist,
+// creates the owner for the existing (or default) organization, and
+// refuses once the first user exists — so the owner can never be
+// locked out and setup can never be re-run to hijack the org. The
+// owner sets their own password here — never in chat, never hardcoded.
+const AUTH_MIGRATION_MESSAGE =
+  'Coach logins are not set up yet — run migrations/009_coach_auth.sql in the Neon SQL Editor, then restart.';
+
+app.get(
+  '/api/auth/status',
+  asyncHandler(async (_req, res) => {
+    const db = getPool();
+    try {
+      const count = await db.query('SELECT COUNT(*)::int AS n FROM users');
+      res.json({ ok: true, usersExist: count.rows[0].n > 0 });
+    } catch (err) {
+      if (isMissingTable(err)) {
+        res.json({ ok: true, usersExist: false, authUnavailable: true });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+app.post(
+  '/api/auth/setup',
+  asyncHandler(async (req, res) => {
+    const { email, password, name } = req.body ?? {};
+    const cleanMail = cleanEmail(email);
+    const cleanPass = cleanPassword(password);
+    const cleanFullName = cleanName(name);
+    if (!cleanMail) {
+      res.status(400).json({ ok: false, error: 'Enter a valid email address.' });
+      return;
+    }
+    if (!cleanPass) {
+      res.status(400).json({ ok: false, error: 'Password must be at least 8 characters.' });
+      return;
+    }
+    if (!cleanFullName) {
+      res.status(400).json({ ok: false, error: 'Name is required (100 characters or fewer).' });
+      return;
+    }
+    const db = getPool();
+    try {
+      const existing = await db.query('SELECT COUNT(*)::int AS n FROM users');
+      if (existing.rows[0].n > 0) {
+        res.status(400).json({ ok: false, error: 'Setup has already been completed — log in instead.' });
+        return;
+      }
+      const org = await getOrCreateOrganization();
+      const user = await db.query(
+        `INSERT INTO users (org_id, email, password_hash, name, role)
+         VALUES ($1, $2, $3, $4, 'owner')
+         RETURNING id, org_id, email, name, role, created_at`,
+        [org.id, cleanMail, hashPassword(cleanPass), cleanFullName],
+      );
+      const token = newSessionToken();
+      await db.query(
+        `INSERT INTO sessions (user_id, token_hash, expires_at)
+         VALUES ($1, $2, now() + interval '30 days')`,
+        [user.rows[0].id, hashSessionToken(token)],
+      );
+      res
+        .status(201)
+        .setHeader('Set-Cookie', sessionCookieValue(token))
+        .json({ ok: true, user: publicUser(user.rows[0]) });
+    } catch (err) {
+      if (isMissingTable(err)) {
+        res.status(503).json({ ok: false, error: AUTH_MIGRATION_MESSAGE });
+        return;
+      }
+      if ((err as { code?: string }).code === '23505') {
+        res.status(400).json({ ok: false, error: 'That email is already registered.' });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+app.post(
+  '/api/auth/login',
+  asyncHandler(async (req, res) => {
+    const { email, password } = req.body ?? {};
+    const cleanMail = cleanEmail(email);
+    const db = getPool();
+    try {
+      const row = cleanMail
+        ? await db.query('SELECT * FROM users WHERE email = $1 ORDER BY created_at ASC LIMIT 1', [cleanMail])
+        : { rows: [] as never[] };
+      const user = row.rows[0];
+      const passwordOk =
+        user && typeof password === 'string' ? verifyPassword(password, user.password_hash as string) : false;
+      if (!user) {
+        // Same scrypt cost as a real check, so timing doesn't reveal
+        // whether the email exists.
+        dummyPasswordCheck(typeof password === 'string' ? password : '');
+      }
+      if (!user || !passwordOk) {
+        res.status(401).json({ ok: false, error: 'Invalid email or password.' });
+        return;
+      }
+      const token = newSessionToken();
+      await db.query(
+        `INSERT INTO sessions (user_id, token_hash, expires_at)
+         VALUES ($1, $2, now() + interval '30 days')`,
+        [user.id, hashSessionToken(token)],
+      );
+      res
+        .setHeader('Set-Cookie', sessionCookieValue(token))
+        .json({ ok: true, user: publicUser(user) });
+    } catch (err) {
+      if (isMissingTable(err)) {
+        res.status(503).json({ ok: false, error: AUTH_MIGRATION_MESSAGE });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+app.post(
+  '/api/auth/logout',
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    try {
+      // The cookie value is the raw token; the DB stores only its hash.
+      const cookie = req.headers.cookie ?? '';
+      const match = cookie.match(/(?:^|;\s*)sg_session=([^;]+)/);
+      if (match) {
+        await db.query('DELETE FROM sessions WHERE token_hash = $1', [hashSessionToken(match[1])]);
+      }
+    } catch (err) {
+      if (!isMissingTable(err)) throw err;
+    }
+    res.setHeader('Set-Cookie', clearSessionCookie()).json({ ok: true, loggedOut: true });
+  }),
+);
+
+app.get(
+  '/api/auth/me',
+  asyncHandler(async (req, res) => {
+    if (req.authUnavailable) {
+      res.status(503).json({ ok: false, error: AUTH_MIGRATION_MESSAGE });
+      return;
+    }
+    if (!req.auth) {
+      res.status(401).json({ ok: false, error: 'Not logged in.' });
+      return;
+    }
+    res.json({ ok: true, user: publicUser(req.auth.user), teamIds: req.auth.teamIds });
+  }),
+);
+
+// --------------------------------------------------------------- coaches
+// Owner-only coach management. Responses never include password_hash.
+// Coaches get a role + team assignments; they see only their teams.
+async function loadCoaches(db: ReturnType<typeof getPool>, orgId: string) {
+  const users = await db.query(
+    'SELECT id, org_id, email, name, role, created_at FROM users WHERE org_id = $1 ORDER BY created_at ASC',
+    [orgId],
+  );
+  const userIds = users.rows.map((u) => u.id as string);
+  const assigns =
+    userIds.length > 0
+      ? await db.query('SELECT user_id, team_id FROM coach_teams WHERE user_id = ANY($1)', [userIds])
+      : { rows: [] as { user_id: string; team_id: string }[] };
+  const teamIdsByUser = new Map<string, string[]>();
+  for (const a of assigns.rows) {
+    const list = teamIdsByUser.get(a.user_id) ?? [];
+    list.push(a.team_id);
+    teamIdsByUser.set(a.user_id, list);
+  }
+  return users.rows.map((u) => ({ ...publicUser(u), teamIds: teamIdsByUser.get(u.id) ?? [] }));
+}
+
+app.get(
+  '/api/coaches',
+  requireOwner,
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
+    res.json({ ok: true, coaches: await loadCoaches(db, org.id) });
+  }),
+);
+
+app.post(
+  '/api/coaches',
+  requireOwner,
+  asyncHandler(async (req, res) => {
+    const { email, password, name, role, teamIds } = req.body ?? {};
+    const cleanMail = cleanEmail(email);
+    const cleanPass = cleanPassword(password);
+    const cleanFullName = cleanName(name);
+    const cleanTeams = cleanTeamIds(teamIds);
+    if (!cleanMail) {
+      res.status(400).json({ ok: false, error: 'Enter a valid email address.' });
+      return;
+    }
+    if (!cleanPass) {
+      res.status(400).json({ ok: false, error: 'Password must be at least 8 characters.' });
+      return;
+    }
+    if (!cleanFullName) {
+      res.status(400).json({ ok: false, error: 'Name is required (100 characters or fewer).' });
+      return;
+    }
+    if (!NON_OWNER_ROLES.includes(role as NonOwnerRole)) {
+      res.status(400).json({ ok: false, error: "Role must be 'head_coach', 'assistant', or 'stat_crew'." });
+      return;
+    }
+    if (!cleanTeams) {
+      res.status(400).json({ ok: false, error: 'teamIds must be an array of team IDs.' });
+      return;
+    }
+    const db = getPool();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
+    // Every assigned team must belong to this org.
+    if (cleanTeams.length > 0) {
+      const teams = await db.query('SELECT id FROM teams WHERE org_id = $1 AND id = ANY($2)', [
+        org.id,
+        cleanTeams,
+      ]);
+      if (teams.rows.length !== cleanTeams.length) {
+        res.status(400).json({ ok: false, error: 'One or more selected teams were not found.' });
+        return;
+      }
+    }
+    try {
+      const client = await db.connect();
+      try {
+        await client.query('BEGIN');
+        const user = await client.query(
+          `INSERT INTO users (org_id, email, password_hash, name, role)
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING id, org_id, email, name, role, created_at`,
+          [org.id, cleanMail, hashPassword(cleanPass), cleanFullName, role],
+        );
+        for (const teamId of cleanTeams) {
+          await client.query('INSERT INTO coach_teams (user_id, team_id) VALUES ($1, $2)', [
+            user.rows[0].id,
+            teamId,
+          ]);
+        }
+        await client.query('COMMIT');
+        const coaches = await loadCoaches(db, org.id);
+        res.status(201).json({ ok: true, coach: coaches.find((c) => c.id === user.rows[0].id) });
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+    } catch (err) {
+      if ((err as { code?: string }).code === '23505') {
+        res.status(400).json({ ok: false, error: 'That email is already registered.' });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+app.patch(
+  '/api/coaches/:id',
+  requireOwner,
+  asyncHandler(async (req, res) => {
+    const { name, role, teamIds } = req.body ?? {};
+    const db = getPool();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
+    const targetId = String(req.params.id);
+    const target = await db.query('SELECT * FROM users WHERE id = $1 AND org_id = $2', [targetId, org.id]);
+    if (target.rows.length === 0) {
+      res.status(404).json({ ok: false, error: 'Coach not found.' });
+      return;
+    }
+    if (target.rows[0].role === 'owner') {
+      res.status(400).json({ ok: false, error: 'The owner account cannot be changed here.' });
+      return;
+    }
+    if (targetId === req.auth!.user.id) {
+      res.status(400).json({ ok: false, error: 'You cannot change your own account here.' });
+      return;
+    }
+    let cleanFullName: string | null = null;
+    if (name !== undefined) {
+      cleanFullName = cleanName(name);
+      if (!cleanFullName) {
+        res.status(400).json({ ok: false, error: 'Name must be a non-empty string of 100 characters or fewer.' });
+        return;
+      }
+    }
+    if (role !== undefined && !NON_OWNER_ROLES.includes(role as NonOwnerRole)) {
+      res.status(400).json({ ok: false, error: "Role must be 'head_coach', 'assistant', or 'stat_crew'." });
+      return;
+    }
+    let cleanTeams: string[] | null = null;
+    if (teamIds !== undefined) {
+      cleanTeams = cleanTeamIds(teamIds);
+      if (!cleanTeams) {
+        res.status(400).json({ ok: false, error: 'teamIds must be an array of team IDs.' });
+        return;
+      }
+      if (cleanTeams.length > 0) {
+        const teams = await db.query('SELECT id FROM teams WHERE org_id = $1 AND id = ANY($2)', [
+          org.id,
+          cleanTeams,
+        ]);
+        if (teams.rows.length !== cleanTeams.length) {
+          res.status(400).json({ ok: false, error: 'One or more selected teams were not found.' });
+          return;
+        }
+      }
+    }
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      if (cleanFullName !== null) {
+        await client.query('UPDATE users SET name = $1 WHERE id = $2', [cleanFullName, targetId]);
+      }
+      if (role !== undefined) {
+        await client.query('UPDATE users SET role = $1 WHERE id = $2', [role, targetId]);
+      }
+      if (cleanTeams !== null) {
+        await client.query('DELETE FROM coach_teams WHERE user_id = $1', [targetId]);
+        for (const teamId of cleanTeams) {
+          await client.query('INSERT INTO coach_teams (user_id, team_id) VALUES ($1, $2)', [
+            targetId,
+            teamId,
+          ]);
+        }
+      }
+      await client.query('COMMIT');
+      const coaches = await loadCoaches(db, org.id);
+      res.json({ ok: true, coach: coaches.find((c) => c.id === targetId) });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }),
+);
+
+app.delete(
+  '/api/coaches/:id',
+  requireOwner,
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
+    const targetId = String(req.params.id);
+    const target = await db.query('SELECT * FROM users WHERE id = $1 AND org_id = $2', [targetId, org.id]);
+    if (target.rows.length === 0) {
+      res.status(404).json({ ok: false, error: 'Coach not found.' });
+      return;
+    }
+    if (target.rows[0].role === 'owner') {
+      res.status(400).json({ ok: false, error: 'The owner account cannot be deleted.' });
+      return;
+    }
+    if (targetId === req.auth!.user.id) {
+      res.status(400).json({ ok: false, error: 'You cannot delete your own account.' });
+      return;
+    }
+    // Sessions + team assignments cascade off the user row.
+    await db.query('DELETE FROM users WHERE id = $1', [targetId]);
+    res.json({ ok: true, deleted: true });
+  }),
+);
+
 // ------------------------------------------------------------- workspace
 // Full state in one call: org, teams, players, games, events, lineups.
 app.get(
   '/api/workspace',
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const auth = authOf(req);
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const [teams, players, games, events, lineups] = await Promise.all([
       db.query('SELECT * FROM teams WHERE org_id = $1 ORDER BY created_at ASC', [org.id]),
       db.query(
@@ -68,14 +485,21 @@ app.get(
         [org.id],
       ),
     ]);
+    // Events/lineups carry a game_id, not a team_id — map through the
+    // games the caller may see.
+    const visibleGames = games.rows.filter((g) => canAccessTeam(auth, g.team_id));
+    const gameTeamIds = new Set(visibleGames.map((g) => g.id));
     res.json({
       ok: true,
       organization: org,
-      teams: teams.rows,
-      players: players.rows,
-      games: games.rows,
-      events: events.rows,
-      lineups: lineups.rows,
+      // Non-owners see only their assigned teams — and only the
+      // players, games, events, and lineups that belong to those teams.
+      // Filtered server-side before anything leaves the API.
+      teams: teams.rows.filter((t) => canAccessTeam(auth, t.id)),
+      players: players.rows.filter((p) => canAccessTeam(auth, p.team_id)),
+      games: visibleGames,
+      events: events.rows.filter((e) => gameTeamIds.has(e.game_id)),
+      lineups: lineups.rows.filter((l) => gameTeamIds.has(l.game_id)),
     });
   }),
 );
@@ -84,6 +508,7 @@ app.get(
 // Rename the organization. Trims, requires a non-empty name, max 100 chars.
 app.patch(
   '/api/organization',
+  requireOwner,
   asyncHandler(async (req, res) => {
     const { name } = req.body ?? {};
     if (typeof name !== 'string' || !name.trim()) {
@@ -95,7 +520,7 @@ app.patch(
       return;
     }
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const result = await db.query('UPDATE organizations SET name = $1 WHERE id = $2 RETURNING *', [
       name.trim(),
       org.id,
@@ -107,6 +532,7 @@ app.patch(
 // ----------------------------------------------------------------- teams
 app.post(
   '/api/teams',
+  requireOwner,
   asyncHandler(async (req, res) => {
     const { name, sport, season } = req.body ?? {};
     if (typeof name !== 'string' || !name.trim()) {
@@ -114,7 +540,7 @@ app.post(
       return;
     }
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const result = await db.query(
       `INSERT INTO teams (org_id, name, sport, season)
        VALUES ($1, $2, $3, $4) RETURNING *`,
@@ -129,7 +555,11 @@ app.get(
   '/api/teams/:teamId/players',
   asyncHandler(async (req, res) => {
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
+    if (!canAccessTeam(authOf(req), String(req.params.teamId))) {
+      res.status(404).json({ ok: false, error: 'Team not found.' });
+      return;
+    }
     const result = await db.query(
       `SELECT p.* FROM players p JOIN teams t ON t.id = p.team_id
        WHERE t.org_id = $1 AND p.team_id = $2 ORDER BY p.created_at ASC`,
@@ -148,13 +578,13 @@ app.post(
       return;
     }
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     // Confirm the team belongs to this org before inserting.
     const team = await db.query('SELECT id FROM teams WHERE id = $1 AND org_id = $2', [
       req.params.teamId,
       org.id,
     ]);
-    if (team.rows.length === 0) {
+    if (team.rows.length === 0 || !canAccessTeam(authOf(req), String(req.params.teamId))) {
       res.status(404).json({ ok: false, error: 'Team not found.' });
       return;
     }
@@ -182,11 +612,17 @@ app.post(
 // Error, Substitution, Opponent point), plus a per-game breakdown.
 // There is no season field on games in this schema, so "season" is not
 // a separate bucket — career totals + per-game is the honest shape.
-async function getOrgPlayer(db: ReturnType<typeof getPool>, orgId: string, playerId: string) {
+async function getOrgPlayer(
+  db: ReturnType<typeof getPool>,
+  req: express.Request,
+  playerId: string,
+) {
+  const auth = authOf(req);
+  const teamIds = auth.teamIds;
   const player = await db.query(
     `SELECT p.* FROM players p JOIN teams t ON t.id = p.team_id
-     WHERE t.org_id = $1 AND p.id = $2`,
-    [orgId, playerId],
+     WHERE t.org_id = $1 AND p.id = $2${teamIds ? ' AND t.id = ANY($3)' : ''}`,
+    teamIds ? [auth.user.org_id, playerId, teamIds] : [auth.user.org_id, playerId],
   );
   return player.rows[0] ?? null;
 }
@@ -264,9 +700,9 @@ app.get(
   '/api/players/:playerId/profile',
   asyncHandler(async (req, res) => {
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const playerId = String(req.params.playerId);
-    const player = await getOrgPlayer(db, org.id, playerId);
+    const player = await getOrgPlayer(db, req, playerId);
     if (!player) {
       res.status(404).json({ ok: false, error: 'Player not found.' });
       return;
@@ -282,9 +718,9 @@ app.patch(
   asyncHandler(async (req, res) => {
     const { bio, height, graduation_year, positions_text, school, club_team } = req.body ?? {};
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const playerId = String(req.params.playerId);
-    const player = await getOrgPlayer(db, org.id, playerId);
+    const player = await getOrgPlayer(db, req, playerId);
     if (!player) {
       res.status(404).json({ ok: false, error: 'Player not found.' });
       return;
@@ -340,9 +776,9 @@ app.post(
   '/api/players/:playerId/profile/publish',
   asyncHandler(async (req, res) => {
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const playerId = String(req.params.playerId);
-    const player = await getOrgPlayer(db, org.id, playerId);
+    const player = await getOrgPlayer(db, req, playerId);
     if (!player) {
       res.status(404).json({ ok: false, error: 'Player not found.' });
       return;
@@ -364,9 +800,9 @@ app.post(
   '/api/players/:playerId/profile/unpublish',
   asyncHandler(async (req, res) => {
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const playerId = String(req.params.playerId);
-    const player = await getOrgPlayer(db, org.id, playerId);
+    const player = await getOrgPlayer(db, req, playerId);
     if (!player) {
       res.status(404).json({ ok: false, error: 'Player not found.' });
       return;
@@ -385,9 +821,9 @@ app.post(
   '/api/players/:playerId/profile/revoke',
   asyncHandler(async (req, res) => {
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const playerId = String(req.params.playerId);
-    const player = await getOrgPlayer(db, org.id, playerId);
+    const player = await getOrgPlayer(db, req, playerId);
     if (!player) {
       res.status(404).json({ ok: false, error: 'Player not found.' });
       return;
@@ -417,9 +853,9 @@ app.post(
       return;
     }
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const team = await db.query('SELECT id FROM teams WHERE id = $1 AND org_id = $2', [team_id, org.id]);
-    if (team.rows.length === 0) {
+    if (team.rows.length === 0 || !canAccessTeam(authOf(req), team_id)) {
       res.status(404).json({ ok: false, error: 'Team not found.' });
       return;
     }
@@ -464,13 +900,13 @@ app.get(
   '/api/games/:gameId',
   asyncHandler(async (req, res) => {
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const game = await db.query(
       `SELECT g.* FROM games g JOIN teams t ON t.id = g.team_id
        WHERE t.org_id = $1 AND g.id = $2`,
       [org.id, req.params.gameId],
     );
-    if (game.rows.length === 0) {
+    if (game.rows.length === 0 || !canAccessTeam(authOf(req), game.rows[0].team_id)) {
       res.status(404).json({ ok: false, error: 'Game not found.' });
       return;
     }
@@ -501,8 +937,8 @@ app.patch(
       return;
     }
     const db = getPool();
-    const org = await getOrCreateOrganization();
-    const game = await getOrgGame(db, org.id, String(req.params.gameId));
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
+    const game = await getOrgGame(db, req, String(req.params.gameId));
     if (!game) {
       res.status(404).json({ ok: false, error: 'Game not found.' });
       return;
@@ -577,13 +1013,13 @@ app.post(
       return;
     }
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const game = await db.query(
       `SELECT g.* FROM games g JOIN teams t ON t.id = g.team_id
        WHERE t.org_id = $1 AND g.id = $2`,
       [org.id, req.params.gameId],
     );
-    if (game.rows.length === 0) {
+    if (game.rows.length === 0 || !canAccessTeam(authOf(req), game.rows[0].team_id)) {
       res.status(404).json({ ok: false, error: 'Game not found.' });
       return;
     }
@@ -628,13 +1064,13 @@ app.post(
   '/api/games/:gameId/undo',
   asyncHandler(async (req, res) => {
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const game = await db.query(
       `SELECT g.* FROM games g JOIN teams t ON t.id = g.team_id
        WHERE t.org_id = $1 AND g.id = $2`,
       [org.id, req.params.gameId],
     );
-    if (game.rows.length === 0) {
+    if (game.rows.length === 0 || !canAccessTeam(authOf(req), game.rows[0].team_id)) {
       res.status(404).json({ ok: false, error: 'Game not found.' });
       return;
     }
@@ -707,13 +1143,13 @@ app.post(
       return;
     }
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const game = await db.query(
       `SELECT g.* FROM games g JOIN teams t ON t.id = g.team_id
        WHERE t.org_id = $1 AND g.id = $2`,
       [org.id, req.params.gameId],
     );
-    if (game.rows.length === 0) {
+    if (game.rows.length === 0 || !canAccessTeam(authOf(req), game.rows[0].team_id)) {
       res.status(404).json({ ok: false, error: 'Game not found.' });
       return;
     }
@@ -790,13 +1226,18 @@ app.post(
       return;
     }
     const db = getPool();
-    const org = await getOrCreateOrganization();
-    const result = await db.query(
-      `UPDATE games g SET youtube_video_id = $1 FROM teams t
-       WHERE g.team_id = t.id AND t.org_id = $2 AND g.id = $3
-       RETURNING g.*`,
-      [videoId, org.id, req.params.gameId],
-    );
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
+    // Team-scoped fetch FIRST — the UPDATE must never run on a game
+    // the caller can't see.
+    const game = await getOrgGame(db, req, String(req.params.gameId));
+    if (!game) {
+      res.status(404).json({ ok: false, error: 'Game not found.' });
+      return;
+    }
+    const result = await db.query('UPDATE games SET youtube_video_id = $1 WHERE id = $2 RETURNING *', [
+      videoId,
+      game.id,
+    ]);
     if (result.rows.length === 0) {
       res.status(404).json({ ok: false, error: 'Game not found.' });
       return;
@@ -810,11 +1251,13 @@ app.post(
 // the caller presents the exact token. Publish reuses an existing token
 // (or mints one); revoke mints a fresh token so the old link dies while
 // the published flag stays as-is. All three are coach-side (org-scoped).
-async function getOrgGame(db: ReturnType<typeof getPool>, orgId: string, gameId: string) {
+async function getOrgGame(db: ReturnType<typeof getPool>, req: express.Request, gameId: string) {
+  const auth = authOf(req);
+  const teamIds = auth.teamIds;
   const game = await db.query(
     `SELECT g.* FROM games g JOIN teams t ON t.id = g.team_id
-     WHERE t.org_id = $1 AND g.id = $2`,
-    [orgId, gameId],
+     WHERE t.org_id = $1 AND g.id = $2${teamIds ? ' AND t.id = ANY($3)' : ''}`,
+    teamIds ? [auth.user.org_id, gameId, teamIds] : [auth.user.org_id, gameId],
   );
   return game.rows[0] ?? null;
 }
@@ -828,11 +1271,11 @@ app.post(
   '/api/games/:gameId/publish',
   asyncHandler(async (req, res) => {
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     // :gameId is always a single segment; String() normalizes Express 5's
     // `string | string[]` param type for the typed helper below.
     const gameId = String(req.params.gameId);
-    const game = await getOrgGame(db, org.id, gameId);
+    const game = await getOrgGame(db, req, gameId);
     if (!game) {
       res.status(404).json({ ok: false, error: 'Game not found.' });
       return;
@@ -850,9 +1293,9 @@ app.post(
   '/api/games/:gameId/unpublish',
   asyncHandler(async (req, res) => {
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const gameId = String(req.params.gameId);
-    const game = await getOrgGame(db, org.id, gameId);
+    const game = await getOrgGame(db, req, gameId);
     if (!game) {
       res.status(404).json({ ok: false, error: 'Game not found.' });
       return;
@@ -868,9 +1311,9 @@ app.post(
   '/api/games/:gameId/revoke',
   asyncHandler(async (req, res) => {
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const gameId = String(req.params.gameId);
-    const game = await getOrgGame(db, org.id, gameId);
+    const game = await getOrgGame(db, req, gameId);
     if (!game) {
       res.status(404).json({ ok: false, error: 'Game not found.' });
       return;
@@ -1068,24 +1511,40 @@ function cleanReelClips(value: unknown): Record<string, unknown>[] | null {
   return cleaned;
 }
 
-async function getOrgReel(db: ReturnType<typeof getPool>, orgId: string, reelId: string) {
-  const reel = await db.query('SELECT * FROM reel_projects WHERE id = $1 AND org_id = $2', [
-    reelId,
-    orgId,
-  ]);
+async function getOrgReel(db: ReturnType<typeof getPool>, req: express.Request, reelId: string) {
+  const auth = authOf(req);
+  const teamIds = auth.teamIds;
+  // Non-owners see only reels tied to one of their teams' games. Reels
+  // with no game (org-wide) are owner-only: the LEFT JOIN gives them a
+  // NULL team, which never matches ANY(...).
+  const reel = await db.query(
+    `SELECT r.* FROM reel_projects r LEFT JOIN games g ON g.id = r.game_id
+     WHERE r.id = $1 AND r.org_id = $2${teamIds ? ' AND g.team_id = ANY($3)' : ''}`,
+    teamIds ? [reelId, auth.user.org_id, teamIds] : [reelId, auth.user.org_id],
+  );
   return reel.rows[0] ?? null;
 }
 
 app.get(
   '/api/reels',
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const result = await db.query(
       'SELECT * FROM reel_projects WHERE org_id = $1 ORDER BY created_at DESC',
       [org.id],
     );
-    res.json({ ok: true, reels: result.rows });
+    // Non-owners see only reels tied to one of their teams' games.
+    // Org-wide reels (no game) are owner-only.
+    let reels = result.rows;
+    if (authOf(req).teamIds !== null) {
+      const games = await db.query('SELECT id FROM games WHERE team_id = ANY($1)', [
+        authOf(req).teamIds,
+      ]);
+      const visibleGameIds = new Set(games.rows.map((g) => g.id as string));
+      reels = reels.filter((r) => r.game_id && visibleGameIds.has(r.game_id));
+    }
+    res.json({ ok: true, reels });
   }),
 );
 
@@ -1111,7 +1570,19 @@ app.post(
       cleanClips = cleaned;
     }
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
+    // A reel attached to a game must be on a team the caller can see.
+    // A reel with no game is org-wide — owner-only.
+    if (typeof game_id === 'string' && game_id) {
+      const game = await getOrgGame(db, req, game_id);
+      if (!game) {
+        res.status(404).json({ ok: false, error: 'Game not found.' });
+        return;
+      }
+    } else if (authOf(req).teamIds !== null) {
+      res.status(403).json({ ok: false, error: 'Reels must be attached to one of your teams.' });
+      return;
+    }
     const result = await db.query(
       `INSERT INTO reel_projects (org_id, game_id, name, clips, music_track)
        VALUES ($1, $2, $3, $4, $5) RETURNING *`,
@@ -1142,8 +1613,8 @@ app.post(
       preset === 'hype' || preset === 'clean' || preset === 'simple' ? preset : 'hype';
     const presetConfig = AUTO_PRESETS[presetName];
     const db = getPool();
-    const org = await getOrCreateOrganization();
-    const game = await getOrgGame(db, org.id, gameId);
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
+    const game = await getOrgGame(db, req, gameId);
     if (!game) {
       res.status(404).json({ ok: false, error: 'Game not found.' });
       return;
@@ -1188,8 +1659,8 @@ app.get(
   '/api/reels/:id',
   asyncHandler(async (req, res) => {
     const db = getPool();
-    const org = await getOrCreateOrganization();
-    const reel = await getOrgReel(db, org.id, String(req.params.id));
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
+    const reel = await getOrgReel(db, req, String(req.params.id));
     if (!reel) {
       res.status(404).json({ ok: false, error: 'Reel not found.' });
       return;
@@ -1203,9 +1674,9 @@ app.patch(
   asyncHandler(async (req, res) => {
     const { name, clips, music_track, status } = req.body ?? {};
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const reelId = String(req.params.id);
-    const reel = await getOrgReel(db, org.id, reelId);
+    const reel = await getOrgReel(db, req, reelId);
     if (!reel) {
       res.status(404).json({ ok: false, error: 'Reel not found.' });
       return;
@@ -1262,9 +1733,9 @@ app.delete(
   '/api/reels/:id',
   asyncHandler(async (req, res) => {
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const reelId = String(req.params.id);
-    const reel = await getOrgReel(db, org.id, reelId);
+    const reel = await getOrgReel(db, req, reelId);
     if (!reel) {
       res.status(404).json({ ok: false, error: 'Reel not found.' });
       return;
@@ -1280,8 +1751,8 @@ app.post(
   '/api/reels/:id/export',
   asyncHandler(async (req, res) => {
     const db = getPool();
-    const org = await getOrCreateOrganization();
-    const reel = await getOrgReel(db, org.id, String(req.params.id));
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
+    const reel = await getOrgReel(db, req, String(req.params.id));
     if (!reel) {
       res.status(404).json({ ok: false, error: 'Reel not found.' });
       return;
@@ -1400,9 +1871,9 @@ app.post(
   '/api/players/:playerId/enroll-token',
   asyncHandler(async (req, res) => {
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const playerId = String(req.params.playerId);
-    const player = await getOrgPlayer(db, org.id, playerId);
+    const player = await getOrgPlayer(db, req, playerId);
     if (!player) {
       res.status(404).json({ ok: false, error: 'Player not found.' });
       return;
@@ -1485,9 +1956,9 @@ app.get(
   '/api/players/:playerId/family',
   asyncHandler(async (req, res) => {
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const playerId = String(req.params.playerId);
-    const player = await getOrgPlayer(db, org.id, playerId);
+    const player = await getOrgPlayer(db, req, playerId);
     if (!player) {
       res.status(404).json({ ok: false, error: 'Player not found.' });
       return;
@@ -1516,17 +1987,19 @@ app.delete(
   '/api/family/:contactId',
   asyncHandler(async (req, res) => {
     const db = getPool();
-    const org = await getOrCreateOrganization();
-    const result = await db.query(
-      `DELETE FROM family_contacts fc USING players p, teams t
-       WHERE fc.id = $1 AND fc.player_id = p.id AND p.team_id = t.id AND t.org_id = $2
-       RETURNING fc.id`,
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
+    const teamRow = await db.query(
+      `SELECT t.id AS team_id FROM family_contacts fc
+       JOIN players p ON p.id = fc.player_id
+       JOIN teams t ON t.id = p.team_id
+       WHERE fc.id = $1 AND t.org_id = $2`,
       [String(req.params.contactId), org.id],
     );
-    if (result.rows.length === 0) {
+    if (teamRow.rows.length === 0 || !canAccessTeam(authOf(req), teamRow.rows[0].team_id)) {
       res.status(404).json({ ok: false, error: 'Contact not found.' });
       return;
     }
+    await db.query('DELETE FROM family_contacts WHERE id = $1', [String(req.params.contactId)]);
     res.json({ ok: true, deleted: true });
   }),
 );
@@ -1538,9 +2011,9 @@ app.get(
   '/api/games/:gameId/sms-log',
   asyncHandler(async (req, res) => {
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const gameId = String(req.params.gameId);
-    const game = await getOrgGame(db, org.id, gameId);
+    const game = await getOrgGame(db, req, gameId);
     if (!game) {
       res.status(404).json({ ok: false, error: 'Game not found.' });
       return;
@@ -1573,9 +2046,9 @@ app.post(
   '/api/games/:gameId/notify-highlights',
   asyncHandler(async (req, res) => {
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const gameId = String(req.params.gameId);
-    const game = await getOrgGame(db, org.id, gameId);
+    const game = await getOrgGame(db, req, gameId);
     if (!game) {
       res.status(404).json({ ok: false, error: 'Game not found.' });
       return;
@@ -1611,9 +2084,9 @@ app.post(
   '/api/games/:gameId/export-sheets',
   asyncHandler(async (req, res) => {
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const gameId = String(req.params.gameId);
-    const game = await getOrgGame(db, org.id, gameId);
+    const game = await getOrgGame(db, req, gameId);
     if (!game) {
       res.status(404).json({ ok: false, error: 'Game not found.' });
       return;
@@ -1695,9 +2168,9 @@ app.get(
   '/api/games/:gameId/exports',
   asyncHandler(async (req, res) => {
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const gameId = String(req.params.gameId);
-    const game = await getOrgGame(db, org.id, gameId);
+    const game = await getOrgGame(db, req, gameId);
     if (!game) {
       res.status(404).json({ ok: false, error: 'Game not found.' });
       return;
@@ -1739,9 +2212,9 @@ app.get(
   '/api/games/:gameId/analysis',
   asyncHandler(async (req, res) => {
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const gameId = String(req.params.gameId);
-    const game = await getOrgGame(db, org.id, gameId);
+    const game = await getOrgGame(db, req, gameId);
     if (!game) {
       res.status(404).json({ ok: false, error: 'Game not found.' });
       return;
@@ -1782,9 +2255,9 @@ app.post(
       }
     }
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const gameId = String(req.params.gameId);
-    const game = await getOrgGame(db, org.id, gameId);
+    const game = await getOrgGame(db, req, gameId);
     if (!game) {
       res.status(404).json({ ok: false, error: 'Game not found.' });
       return;
@@ -1849,9 +2322,9 @@ app.post(
       return;
     }
     const db = getPool();
-    const org = await getOrCreateOrganization();
+    const org = await getOrCreateOrganization(req.auth!.user.org_id);
     const gameId = String(req.params.gameId);
-    const game = await getOrgGame(db, org.id, gameId);
+    const game = await getOrgGame(db, req, gameId);
     if (!game) {
       res.status(404).json({ ok: false, error: 'Game not found.' });
       return;
