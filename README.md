@@ -110,6 +110,14 @@ npm run dev --workspace=@simpligame/client   # http://localhost:5173
   records the export, and lists past exports with links. With no Google
   credentials the button reports "not configured" honestly — and
   **Download CSV** (same data, built client-side) always works.
+- Assisted post-game analysis: per-game **Post-Game Analysis** shows a
+  rule-based overview computed from the game's real recorded data (final
+  score, stat totals, top contributors, key moments, completeness) — no
+  AI, no invented numbers. Each section carries a confidence label (High
+  confidence / Estimated / Missing) derived from the data itself. The
+  coach checks each section and signs it off (Verified, optionally with
+  a correction/note); only Verified sections count as official. Overall
+  status: unreviewed / partially verified / verified.
 
 ## Google Sheets export (service account)
 
