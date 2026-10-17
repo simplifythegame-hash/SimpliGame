@@ -376,6 +376,19 @@ export const api = {
     return data.exports as import('./types').SheetExport[];
   },
 
+  async getAllSheetExports() {
+    const data = await parseJson(await fetch(`/api/exports`));
+    return data.exports as Array<
+      import('./types').SheetExport & {
+        opponent: string;
+        status: string;
+        our_score: number;
+        opponent_score: number;
+        team_name: string;
+      }
+    >;
+  },
+
   async getAnalysis(gameId: string) {
     const data = await parseJson(await fetch(`/api/games/${gameId}/analysis`));
     return data as import('./types').GameAnalysis;
