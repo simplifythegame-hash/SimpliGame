@@ -107,14 +107,31 @@ def run_model(video_path: str) -> list[dict]:
 
 
 def download_video(video_id: str, dest_dir: str) -> str:
-    """Download a YouTube video with yt-dlp. Returns the local path."""
-    if shutil.which("yt-dlp") is None:
-        raise RuntimeError(
-            "yt-dlp is not installed — run: pip install yt-dlp"
-        )
+    """Download a YouTube video with yt-dlp. Returns the local path.
+
+    Prefers the `yt-dlp` executable on PATH; falls back to
+    `python -m yt_dlp` so the worker works even when the Python Scripts
+    folder is not on PATH (common on Windows when "Add to PATH" was
+    unchecked during the Python install).
+    """
+    if shutil.which("yt-dlp") is not None:
+        cmd_base = ["yt-dlp"]
+    else:
+        cmd_base = [sys.executable, "-m", "yt_dlp"]
+        try:
+            probe = subprocess.run(
+                cmd_base + ["--version"], capture_output=True, text=True, timeout=30
+            )
+            if probe.returncode != 0:
+                raise RuntimeError(
+                    "yt-dlp is not installed — run: py -m pip install yt-dlp"
+                )
+        except FileNotFoundError:
+            raise RuntimeError(
+                "yt-dlp is not installed — run: py -m pip install yt-dlp"
+            )
     out_template = os.path.join(dest_dir, "game.%(ext)s")
-    cmd = [
-        "yt-dlp",
+    cmd = cmd_base + [
         "--format", "mp4/best[height<=720]/best",
         "--output", out_template,
         "--no-playlist",
