@@ -139,9 +139,34 @@ No env vars needed. First run migration 009, then restart.
    (head coach / assistant / stat crew) + team checkboxes, change a
    coach's role/teams, remove a coach. Removing a coach deletes their
    sessions too.
-4. Team creation and org rename are owner-only. Everything else is
-   team-scoped: coaches can tag stats, manage games, and view data only
-   for their assigned teams.
+4. **Permissions** — enforced server-side on every write endpoint via a
+   single `requirePermission(action)` helper (a 403 never reveals
+   whether the resource exists: the role check runs before any
+   lookup). The client hides buttons the role may not use; the server
+   still enforces everything. Team scoping is unchanged: unassigned
+   teams still 404.
+
+   | Action | stat_crew | assistant | head_coach | owner |
+   |---|:---:|:---:|:---:|:---:|
+   | View assigned teams / games / profiles | ✅ | ✅ | ✅ | ✅ |
+   | Tag stats, undo | ✅ | ✅ | ✅ | ✅ |
+   | Subs | — | ✅ | ✅ | ✅ |
+   | Go Live / End Game | — | ✅ | ✅ | ✅ |
+   | Analysis verify / unverify | — | ✅ | ✅ | ✅ |
+   | Game creation | — | — | ✅ | ✅ |
+   | Roster changes (add players) | — | — | ✅ | ✅ |
+   | Publish / unpublish (watch + profiles) | — | — | ✅ | ✅ |
+   | Exports (Sheets + CSV) | — | — | ✅ | ✅ |
+   | Profile bio / measurables edits | — | — | ✅ | ✅ |
+   | Reels (create / edit / Auto Reel) | — | — | ✅ | ✅ |
+   | Family-notify sends (highlights alerts) | — | — | ✅ | ✅ |
+   | YouTube attach, enroll links, remove family contacts | — | — | ✅ | ✅ |
+   | Team creation, org rename, coach management | — | — | — | ✅ |
+
+   Notes: Go Live still texts families the watch link for whoever goes
+   live (assistant included) — that SMS is a side effect of going live,
+   not the separate highlights-notify button, which is head_coach+.
+   The owner is the only role that can manage coaches or rename the org.
 5. **Passwords:** any logged-in user can change their own password from
    the header ("Change password" — verifies the current password and
    signs out their other sessions). The owner can reset a coach's
