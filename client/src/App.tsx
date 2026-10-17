@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from './api';
 import type { AuthUser, Coach, EnrollInfo, FamilyContact, Game, GameAnalysis, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Team, Workspace } from './types';
 import YouTubePlayer from './components/YouTubePlayer';
+import VideoPlaceholder from './components/VideoPlaceholder';
 import './styles.css';
 
 /** Stat buttons for the live screen. Points follow volleyball scoring:
@@ -26,7 +27,7 @@ type View =
   | { kind: 'players' }
   | { kind: 'profile'; playerId: string; from: 'teams' | 'players' }
   | { kind: 'highlights' }
-  | { kind: 'reel'; reelId: string }
+  | { kind: 'studio'; reelId: string | null }
   | { kind: 'coaches' };
 
 /**
@@ -264,9 +265,11 @@ export default function App() {
               ? 'players'
               : view.kind === 'profile'
                 ? view.from
-                : view.kind === 'highlights' || view.kind === 'reel'
+                : view.kind === 'highlights'
                   ? 'highlights'
-                  : 'coaches';
+                  : view.kind === 'studio'
+                    ? 'studio'
+                    : 'coaches';
 
   async function handleLogout() {
     try {
@@ -371,6 +374,21 @@ export default function App() {
             Highlight Builder
           </button>
         )}
+        {canRole(me.role, 'head_coach') && (
+          <button
+            className={activeTab === 'studio' ? 'selected' : ''}
+            onClick={() =>
+              setView({
+                kind: 'studio',
+                // Re-clicking the tab keeps the reel already open in
+                // Studio; entering from elsewhere shows the picker.
+                reelId: view.kind === 'studio' ? view.reelId : null,
+              })
+            }
+          >
+            Reel Studio
+          </button>
+        )}
         {me.role === 'owner' && (
           <button className={activeTab === 'coaches' ? 'selected' : ''} onClick={() => setView({ kind: 'coaches' })}>
             Coaches
@@ -414,6 +432,7 @@ export default function App() {
         <LiveGameScreen
           role={me.role}
           game={currentGame}
+          teamName={workspace.teams.find((t) => t.id === currentGame.team_id)?.name ?? 'Team'}
           players={workspace.players.filter((p) => p.team_id === currentGame.team_id)}
           lineupPlayerIds={workspace.lineups.filter((l) => l.game_id === currentGame.id).map((l) => l.player_id)}
           events={workspace.events.filter((e) => e.game_id === currentGame.id)}
@@ -440,6 +459,7 @@ export default function App() {
         <GameDetailScreen
           role={me.role}
           game={currentGame}
+          teamName={workspace.teams.find((t) => t.id === currentGame.team_id)?.name ?? 'Team'}
           players={workspace.players.filter((p) => p.team_id === currentGame.team_id)}
           events={workspace.events.filter((e) => e.game_id === currentGame.id)}
           youtubeUrl={youtubeUrl}
@@ -467,7 +487,7 @@ export default function App() {
           }}
           onAutoReel={async (preset) => {
             const reel = await api.autoReel(currentGame.id, preset);
-            setView({ kind: 'reel', reelId: reel.id });
+            setView({ kind: 'studio', reelId: reel.id });
           }}
           onSetStatus={async (status) => run(() => api.setGameStatus(currentGame.id, status))}
           onBack={() => setView({ kind: view.returnTo })}
@@ -520,18 +540,25 @@ export default function App() {
           role={me.role}
           games={workspace.games}
           teams={workspace.teams}
-          onOpen={(reelId) => setView({ kind: 'reel', reelId })}
+          onOpen={(reelId) => setView({ kind: 'studio', reelId })}
         />
       )}
 
-      {view.kind === 'reel' && (
-        <ReelStudioScreen
-          role={me.role}
-          reelId={view.reelId}
-          workspace={workspace}
-          onBack={() => setView({ kind: 'highlights' })}
-        />
-      )}
+      {view.kind === 'studio' &&
+        (view.reelId ? (
+          <ReelStudioScreen
+            role={me.role}
+            reelId={view.reelId}
+            workspace={workspace}
+            onBack={() => setView({ kind: 'highlights' })}
+          />
+        ) : (
+          <StudioPickerScreen
+            games={workspace.games}
+            teams={workspace.teams}
+            onOpen={(reelId) => setView({ kind: 'studio', reelId })}
+          />
+        ))}
 
       {view.kind === 'coaches' && me.role === 'owner' && (
         <CoachesScreen teams={workspace.teams} onBack={() => setView({ kind: 'home' })} />
@@ -1512,6 +1539,7 @@ function InstallPrompt() {
 function LiveGameScreen(props: {
   role: ClientRole;
   game: Game;
+  teamName: string;
   players: Player[];
   lineupPlayerIds: string[];
   events: { player_id: string | null; stat_type: string; points: number; side: string }[];
@@ -1593,6 +1621,17 @@ function LiveGameScreen(props: {
         <p>
           <small>Families get the watch link by text the moment you go live.</small>
         </p>
+      )}
+
+      <h3>Video</h3>
+      {props.game.youtube_video_id ? (
+        <YouTubePlayer videoId={props.game.youtube_video_id} isLive={props.game.status === 'live'} />
+      ) : (
+        <VideoPlaceholder
+          title={`${props.teamName} vs ${props.game.opponent || 'TBD'}`}
+          subtitle={`${props.game.status === 'live' ? 'Live now' : props.game.status === 'final' ? 'Final' : 'Upcoming'} · ${props.game.period_label}`}
+          status={props.game.status === 'live' ? 'Waiting for stream' : 'No video loaded yet'}
+        />
       )}
 
       <h3>On court — tap a player, then tap a stat</h3>
@@ -1699,6 +1738,7 @@ function LiveGameScreen(props: {
 function GameDetailScreen(props: {
   role: ClientRole;
   game: Game;
+  teamName: string;
   players: Player[];
   events: { player_id: string | null; stat_type: string; points: number; side: string; created_at: string; video_seconds: number }[];
   youtubeUrl: string;
@@ -1880,7 +1920,11 @@ function GameDetailScreen(props: {
       {props.game.youtube_video_id ? (
         <YouTubePlayer videoId={props.game.youtube_video_id} isLive={props.game.status === 'live'} />
       ) : (
-        <p>No video attached yet.</p>
+        <VideoPlaceholder
+          title={`${props.teamName} vs ${props.game.opponent || 'TBD'}`}
+          subtitle={`${props.game.status === 'live' ? 'Live now' : props.game.status === 'final' ? 'Final' : 'Upcoming'} · ${props.game.period_label}`}
+          status={props.game.status === 'live' ? 'Waiting for stream' : 'No video loaded yet'}
+        />
       )}
 
       <h3>Watch link</h3>
@@ -2968,6 +3012,61 @@ function ReelsListScreen(props: {
   );
 }
 
+/**
+ * Reel Studio tab with no reel selected: a picker of builds to open.
+ * Opening one switches the Studio tab to that build's editor. New
+ * builds are created from Highlight Builder (Auto Reel or Create reel).
+ */
+function StudioPickerScreen(props: {
+  games: Game[];
+  teams: Team[];
+  onOpen: (reelId: string) => void;
+}) {
+  const [reels, setReels] = useState<ReelProject[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    api
+      .listReels()
+      .then(setReels)
+      .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load reels'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return <section><p>Loading reels…</p></section>;
+
+  return (
+    <section>
+      <h2>Reel Studio</h2>
+      {error && <p className="error">{error}</p>}
+      <p>Pick a build to edit manually, or create one from Highlight Builder.</p>
+      {reels.length === 0 ? (
+        <p>
+          No builds yet — use <strong>Auto Reel</strong> on Highlight Builder to build a draft
+          from a game&apos;s highlights, or create a reel from the library there.
+        </p>
+      ) : (
+        <ul className="list">
+          {reels.map((r) => {
+            const game = props.games.find((g) => g.id === r.game_id);
+            const team = props.teams.find((t) => t.id === game?.team_id);
+            return (
+              <li key={r.id}>
+                <strong>{r.name}</strong> · {r.clips.length} clip{r.clips.length === 1 ? '' : 's'} ·{' '}
+                {r.music_track || 'No music'} · {r.status}
+                {game ? ` · ${team?.name ?? 'Team'} vs ${game.opponent || 'TBD'}` : ''}
+                {' '}
+                <button onClick={() => props.onOpen(r.id)}>Open in Studio</button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 /** Built-in placeholder music tracks (names only — no real audio files,
  *  no audio playback in this round). Ids match the server's list. */
 const MUSIC_TRACK_OPTIONS = [
@@ -3181,7 +3280,11 @@ function ReelStudioScreen(props: { role: ClientRole; reelId: string; workspace: 
               startSeconds={previewClip.startSeconds}
             />
           ) : (
-            <p>No video attached for this clip.</p>
+            <VideoPlaceholder
+              title={reel?.name ?? 'Reel'}
+              subtitle={`Clip ${previewIndex + 1} of ${clips.length}`}
+              status="No clip video"
+            />
           )}
           <div className="row">
             <button disabled={previewIndex === 0} onClick={() => setPreviewIndex(previewIndex - 1)}>
