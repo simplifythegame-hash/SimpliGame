@@ -171,6 +171,17 @@ export const api = {
     return data.game as Game;
   },
 
+  /** Set the starting 6 for a draft game (Start Live Game flow). */
+  async setLineup(gameId: string, playerIds: string[]) {
+    await parseJson(
+      await fetch(`/api/games/${gameId}/lineup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ player_ids: playerIds }),
+      }),
+    );
+  },
+
   async undo(gameId: string) {
     await parseJson(await fetch(`/api/games/${gameId}/undo`, { method: 'POST' }));
   },
