@@ -151,7 +151,11 @@ export function generateOverview(input: OverviewInput): Omit<AnalysisSection, 'v
     const byPlayer = new Map<string, { points: number; stats: Map<string, number> }>();
     for (const e of playerEvents) {
       const entry = byPlayer.get(e.player_id as string) ?? { points: 0, stats: new Map() };
-      entry.points += e.points;
+      // Our-side points only — an opponent-side point (e.g. our Serve
+      // Error) is the opponent's point, not this player's.
+      if (e.side === 'ours') {
+        entry.points += e.points;
+      }
       entry.stats.set(e.stat_type, (entry.stats.get(e.stat_type) ?? 0) + 1);
       byPlayer.set(e.player_id as string, entry);
     }
