@@ -196,10 +196,14 @@ h3 {
 }
 
 .side-nav button.selected {
-  background: var(--brand, #0A1F44);
+  background: var(--accent, #FF6B1A);
   color: #fff;
   border-color: transparent;
-  box-shadow: 0 2px 8px rgba(11, 42, 107, 0.35);
+  box-shadow: 0 2px 8px rgba(255, 107, 26, 0.4);
+}
+
+.side-nav button.selected:hover {
+  background: var(--accent-dark, #E55A00);
 }
 
 /* ---- Buttons & inputs ---- */
