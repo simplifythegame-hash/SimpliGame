@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from './api';
-import type { AuthUser, Coach, EnrollInfo, FamilyContact, Game, GameAnalysis, GameEvent, LineupRow, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Team, Workspace } from './types';
+import type { AnalysisCandidate, AnalysisJob, AuthUser, Coach, EnrollInfo, FamilyContact, Game, GameAnalysis, GameEvent, LineupRow, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Team, Workspace } from './types';
 import YouTubePlayer from './components/YouTubePlayer';
 import VideoPlaceholder from './components/VideoPlaceholder';
 import Icon, { type IconName } from './components/Icon';
@@ -61,6 +61,7 @@ type View =
   | { kind: 'highlights' }
   | { kind: 'studio'; reelId: string | null }
   | { kind: 'exports' }
+  | { kind: 'review'; gameId: string; returnTo: 'live' | 'teams' | 'highlights' }
   | { kind: 'coaches' };
 
 /**
@@ -186,7 +187,7 @@ export default function App() {
     [workspace, selectedTeamId],
   );
   const currentGame =
-    view.kind === 'liveGame' || view.kind === 'detail'
+    view.kind === 'liveGame' || view.kind === 'detail' || view.kind === 'review'
       ? workspace?.games.find((g) => g.id === view.gameId)
       : undefined;
 
@@ -316,7 +317,8 @@ export default function App() {
 
   // Sidebar active tab: detail / live-tagging screens belong to the tab
   // they were opened from (Live or Team); a profile belongs to the tab
-  // it was opened from (Team or Player Management).
+  // it was opened from (Team or Player Management); the Review Queue
+  // belongs to the tab it was opened from (Live, Team, Highlight Builder).
   const activeTab =
     view.kind === 'home'
       ? 'home'
@@ -324,19 +326,21 @@ export default function App() {
         ? 'live'
         : view.kind === 'detail'
           ? view.returnTo
-          : view.kind === 'teams'
-            ? 'teams'
-            : view.kind === 'players'
-              ? 'players'
-              : view.kind === 'profile'
-                ? view.from
-                : view.kind === 'highlights'
-                  ? 'highlights'
-                  : view.kind === 'studio'
-                    ? 'studio'
-                    : view.kind === 'exports'
-                      ? 'exports'
-                      : 'coaches';
+          : view.kind === 'review'
+            ? view.returnTo
+            : view.kind === 'teams'
+              ? 'teams'
+              : view.kind === 'players'
+                ? 'players'
+                : view.kind === 'profile'
+                  ? view.from
+                  : view.kind === 'highlights'
+                    ? 'highlights'
+                    : view.kind === 'studio'
+                      ? 'studio'
+                      : view.kind === 'exports'
+                        ? 'exports'
+                        : 'coaches';
 
   async function handleLogout() {
     try {
@@ -499,6 +503,7 @@ export default function App() {
           onGoLive={handleGoLiveFromSetup}
           onOpenLiveGame={(gameId) => setView({ kind: 'liveGame', gameId, returnTo: 'live' })}
           onOpenDetail={(gameId) => setView({ kind: 'detail', gameId, returnTo: 'live' })}
+          onOpenReview={(gameId) => setView({ kind: 'review', gameId, returnTo: 'live' })}
         />
       )}
 
@@ -576,6 +581,7 @@ export default function App() {
           onSetStatus={async (status) => run(() => api.setGameStatus(currentGame.id, status))}
           onBack={() => setView({ kind: view.returnTo })}
           onLive={() => setView({ kind: 'liveGame', gameId: currentGame.id, returnTo: view.returnTo })}
+          onOpenReview={(gameId) => setView({ kind: 'review', gameId, returnTo: view.returnTo })}
         />
       )}
 
@@ -627,6 +633,7 @@ export default function App() {
           events={workspace.events}
           players={workspace.players}
           onOpen={(reelId) => setView({ kind: 'studio', reelId })}
+          onOpenReview={(gameId) => setView({ kind: 'review', gameId, returnTo: 'highlights' })}
         />
       )}
 
@@ -647,6 +654,16 @@ export default function App() {
         ))}
 
       {view.kind === 'exports' && <ExportCenterScreen workspace={workspace} />}
+
+      {view.kind === 'review' && currentGame && (
+        <ReviewQueueScreen
+          game={currentGame}
+          teamName={workspace.teams.find((t) => t.id === currentGame.team_id)?.name ?? 'Team'}
+          players={workspace.players.filter((p) => p.team_id === currentGame.team_id)}
+          onBack={() => setView({ kind: view.returnTo })}
+          onChanged={() => void refresh()}
+        />
+      )}
 
       {view.kind === 'coaches' && me.role === 'owner' && (
         <CoachesScreen teams={workspace.teams} onBack={() => setView({ kind: 'home' })} />
@@ -811,6 +828,7 @@ function LiveTabScreen(props: {
   onGoLive: (gameId: string) => Promise<void>;
   onOpenLiveGame: (gameId: string) => void;
   onOpenDetail: (gameId: string) => void;
+  onOpenReview: (gameId: string) => void;
 }) {
   const teamName = (teamId: string) => props.teams.find((t) => t.id === teamId)?.name ?? 'Team';
   const liveGames = props.games.filter((g) => g.status === 'live');
@@ -826,6 +844,30 @@ function LiveTabScreen(props: {
   const [setupError, setSetupError] = useState('');
   const [newOpponent, setNewOpponent] = useState('');
   const [newMode, setNewMode] = useState<'live' | 'film'>('live');
+
+  // AI Vision jobs (head_coach+): per-game status for the Final list.
+  // Best-effort — a failed fetch leaves the list without AI buttons
+  // rather than breaking the whole Live tab.
+  const [aiJobs, setAiJobs] = useState<AnalysisJob[]>([]);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiError, setAiError] = useState('');
+  useEffect(() => {
+    if (!canRole(props.role, 'head_coach')) return;
+    api.getAnalysisJobs().then(setAiJobs).catch(() => {});
+  }, [props.role]);
+
+  async function analyzeGame(gameId: string) {
+    setAiBusy(true);
+    setAiError('');
+    try {
+      await api.createAnalysisJob(gameId);
+      setAiJobs(await api.getAnalysisJobs());
+    } catch (e) {
+      setAiError(e instanceof Error ? e.message : 'Could not start AI analysis');
+    } finally {
+      setAiBusy(false);
+    }
+  }
 
   const selectedTeam = props.teams.find((t) => t.id === selectedTeamId);
   const roster = props.players.filter((p) => p.team_id === selectedTeamId);
@@ -1121,17 +1163,51 @@ function LiveTabScreen(props: {
           <p>No finished games.</p>
         ) : (
           <ul className="list">
-            {finalGames.map((g) => (
-              <GameListItem
-                key={g.id}
-                game={g}
-                teamName={teamName(g.team_id)}
-                onLive={() => props.onOpenLiveGame(g.id)}
-                onDetail={() => props.onOpenDetail(g.id)}
-              />
-            ))}
+            {finalGames.map((g) => {
+              // AI Vision (head_coach+): per-game job status + the
+              // Analyze video / Review Queue button. No video → the
+              // button is disabled with a note.
+              const aiJob = aiJobs.find((j) => j.game_id === g.id);
+              return (
+                <li key={g.id}>
+                  {teamName(g.team_id)} vs {g.opponent || 'TBD'} — {g.our_score}:{g.opponent_score}{' '}
+                  ({g.mode} · {g.status}){' '}
+                  <button onClick={() => props.onOpenLiveGame(g.id)}>Live</button>{' '}
+                  <button onClick={() => props.onOpenDetail(g.id)}>Detail</button>{' '}
+                  {canRole(props.role, 'head_coach') && (
+                    <>
+                      {aiJob && (
+                        <small>
+                          AI: {aiJob.status === 'pending' ? 'Queued' : aiJob.status === 'processing' ? 'Processing' : aiJob.status === 'done' ? 'Done' : 'Failed'}{' '}
+                        </small>
+                      )}
+                      {aiJob?.status === 'done' ? (
+                        <button onClick={() => props.onOpenReview(g.id)} className="btn-icon"><Icon name="ai" />Review Queue</button>
+                      ) : (
+                        <button
+                          disabled={!g.youtube_video_id || aiJob?.status === 'pending' || aiJob?.status === 'processing' || aiBusy}
+                          onClick={() => void analyzeGame(g.id)}
+                          className="btn-icon"
+                        >
+                          <Icon name="ai" />
+                          {aiJob?.status === 'pending'
+                            ? 'AI: Queued…'
+                            : aiJob?.status === 'processing'
+                              ? 'AI: Processing…'
+                              : aiJob?.status === 'failed'
+                                ? 'Retry AI analysis'
+                                : 'Analyze video'}
+                        </button>
+                      )}
+                      {!g.youtube_video_id && <small> Attach a video first.</small>}
+                    </>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
+        {aiError && <p className="error">{aiError}</p>}
       </section>
     </>
   );
@@ -1299,6 +1375,7 @@ function HighlightBuilderScreen(props: {
   events: GameEvent[];
   players: Player[];
   onOpen: (reelId: string) => void;
+  onOpenReview: (gameId: string) => void;
 }) {
   return (
     <>
@@ -1310,6 +1387,7 @@ function HighlightBuilderScreen(props: {
         </p>
       </section>
       <AutoReelSection games={props.games} teams={props.teams} onOpen={props.onOpen} />
+      <AiQueuePickerSection games={props.games} teams={props.teams} role={props.role} onOpenReview={props.onOpenReview} />
       <EventsByPlayerSection
         games={props.games}
         teams={props.teams}
@@ -1526,6 +1604,364 @@ function EventsByPlayerSection(props: {
                 ))}
               </ul>
             </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+/** AI Vision Phase 1 — job status + Analyze video button for one
+ *  finished game. The coach creates the job; the local worker on
+ *  their own machine polls for it, processes the video locally, and
+ *  posts candidates back. Nothing here runs inference — the server
+ *  only stores jobs + candidates. Renders nothing for unfinished
+ *  games (AI analysis runs on finished games only). */
+function AiAnalysisSection(props: {
+  game: Game;
+  role: ClientRole;
+  onOpenReview: (gameId: string) => void;
+}) {
+  const [job, setJob] = useState<AnalysisJob | null>(null);
+  const [candidates, setCandidates] = useState<AnalysisCandidate[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [loaded, setLoaded] = useState(false);
+
+  async function load() {
+    try {
+      const result = await api.getAnalysisJob(props.game.id);
+      setJob(result.job);
+      setCandidates(result.candidates);
+      setLoaded(true);
+    } catch {
+      // Best-effort: the section hides on failure rather than
+      // breaking the whole detail screen.
+    }
+  }
+
+  useEffect(() => {
+    if (props.game.status === 'final') void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.game.id, props.game.status]);
+
+  if (props.game.status !== 'final') return null;
+  if (!canRole(props.role, 'head_coach')) return null;
+
+  const pendingCount = candidates.filter((c) => c.status === 'pending').length;
+  const reviewedCount = candidates.length - pendingCount;
+
+  async function analyze() {
+    setBusy(true);
+    setError('');
+    try {
+      await api.createAnalysisJob(props.game.id);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not start AI analysis');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section>
+      <h3 className="btn-icon"><Icon name="ai" size={22} />AI Vision</h3>
+      <p className="sub-hint">
+        The local worker on your own machine analyzes the game video and proposes
+        candidate plays — you confirm each with one tap. Nothing is published as
+        AI-detected without your yes.
+      </p>
+      {!loaded ? (
+        <p>Loading AI status…</p>
+      ) : !job ? (
+        <>
+          <p>No AI analysis yet for this game.</p>
+          <button
+            disabled={!props.game.youtube_video_id || busy}
+            onClick={() => void analyze()}
+            className="btn-icon"
+          >
+            <Icon name="ai" />{busy ? 'Starting…' : 'Analyze video'}
+          </button>
+          {!props.game.youtube_video_id && <p><small>Attach a video first.</small></p>}
+        </>
+      ) : job.status === 'pending' || job.status === 'processing' ? (
+        <>
+          <p>
+            AI analysis: <strong>{job.status === 'pending' ? 'Queued' : 'Processing'}</strong> — waiting
+            for the local worker. Run the worker on your Dell (see README).
+          </p>
+          <button onClick={() => void load()}>Refresh status</button>
+        </>
+      ) : job.status === 'failed' ? (
+        <>
+          <p className="error">AI analysis failed{job.error ? `: ${job.error}` : '.'}</p>
+          <button disabled={!props.game.youtube_video_id || busy} onClick={() => void analyze()} className="btn-icon">
+            <Icon name="ai" />{busy ? 'Starting…' : 'Retry AI analysis'}
+          </button>
+        </>
+      ) : candidates.length === 0 ? (
+        <>
+          <p>AI analysis is done — no candidates found. Tag manually.</p>
+          <button disabled={!props.game.youtube_video_id || busy} onClick={() => void analyze()} className="btn-icon">
+            <Icon name="ai" />{busy ? 'Starting…' : 'Re-analyze video'}
+          </button>
+        </>
+      ) : (
+        <>
+          <p>
+            AI analysis: <strong>Done</strong> — {pendingCount} candidate{pendingCount === 1 ? '' : 's'} to
+            review, {reviewedCount} reviewed.
+          </p>
+          <button onClick={() => props.onOpenReview(props.game.id)} className="btn-icon">
+            <Icon name="ai" />Open Review Queue
+          </button>{' '}
+          <button disabled={busy} onClick={() => void analyze()}>
+            {busy ? 'Starting…' : 'Re-analyze video'}
+          </button>
+        </>
+      )}
+      {error && <p className="error">{error}</p>}
+    </section>
+  );
+}
+
+/** AI Vision entry inside Highlight Builder: pick a finished game,
+ *  see its job status, and open its Review Queue. */
+function AiQueuePickerSection(props: {
+  games: Game[];
+  teams: Team[];
+  role: ClientRole;
+  onOpenReview: (gameId: string) => void;
+}) {
+  const [gameId, setGameId] = useState('');
+  if (!canRole(props.role, 'head_coach')) return null;
+  const finals = props.games.filter((g) => g.status === 'final');
+  const game = props.games.find((g) => g.id === gameId);
+  return (
+    <section>
+      <h2 className="btn-icon"><Icon name="ai" size={22} />AI Vision — Review Queue</h2>
+      <p>
+        Post-game AI proposes candidate plays for a finished game — confirm each with
+        one tap. Pick a game to see its analysis status.
+      </p>
+      <div className="row">
+        <select value={gameId} onChange={(e) => setGameId(e.target.value)}>
+          <option value="">Pick a finished game…</option>
+          {finals.map((g) => {
+            const team = props.teams.find((t) => t.id === g.team_id);
+            return (
+              <option key={g.id} value={g.id}>
+                {team?.name ?? 'Team'} vs {g.opponent || 'TBD'}
+              </option>
+            );
+          })}
+        </select>
+      </div>
+      {finals.length === 0 && <p>No finished games yet.</p>}
+      {game && <AiAnalysisSection game={game} role={props.role} onOpenReview={props.onOpenReview} />}
+    </section>
+  );
+}
+
+/** Stat labels the coach can pick when correcting a candidate. The
+ *  volleyball set is canonical; the server accepts the full list. */
+const AI_CORRECT_STATS = [
+  'Kill', 'Ace', 'Block', 'Assist', 'Dig', 'Attack Attempt', 'Serve Error', 'Passing Error',
+];
+
+function confidenceLabel(confidence: number): string {
+  if (confidence >= 0.8) return 'High confidence';
+  if (confidence >= 0.5) return 'Medium confidence';
+  return 'Low confidence';
+}
+
+/** AI Vision Phase 1 — Review Queue. One card per pending candidate:
+ *  a 6-second clip, the proposed stat + player, and a confidence
+ *  badge. Confirm writes a NORMAL event (same pipeline as a manual
+ *  tap); Correct lets the coach change the stat and/or player first;
+ *  Skip writes nothing. Reviewed candidates list below so the coach
+ *  can see what was already decided. */
+function ReviewQueueScreen(props: {
+  game: Game;
+  teamName: string;
+  players: Player[];
+  onBack: () => void;
+  onChanged: () => void;
+}) {
+  const [job, setJob] = useState<AnalysisJob | null>(null);
+  const [candidates, setCandidates] = useState<AnalysisCandidate[]>([]);
+  const [error, setError] = useState('');
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [correctingId, setCorrectingId] = useState<string | null>(null);
+  const [correctStat, setCorrectStat] = useState('');
+  const [correctPlayerId, setCorrectPlayerId] = useState('');
+
+  async function load() {
+    try {
+      const result = await api.getAnalysisJob(props.game.id);
+      setJob(result.job);
+      setCandidates(result.candidates);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not load the Review Queue');
+    }
+  }
+
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.game.id]);
+
+  const pending = candidates.filter((c) => c.status === 'pending');
+  const reviewed = candidates.filter((c) => c.status !== 'pending');
+  const playerName = (id: string | null) =>
+    props.players.find((p) => p.id === id)?.name ?? 'Unknown player';
+  const playerLabel = (id: string | null) => {
+    const p = props.players.find((x) => x.id === id);
+    return p ? `#${p.jersey_number} ${p.name}` : 'No player proposed';
+  };
+
+  async function confirm(c: AnalysisCandidate) {
+    setBusyId(c.id);
+    setError('');
+    try {
+      await api.confirmCandidate(c.id, {});
+      await load();
+      props.onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not confirm');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function confirmCorrected(c: AnalysisCandidate) {
+    setBusyId(c.id);
+    setError('');
+    try {
+      await api.confirmCandidate(c.id, {
+        stat: correctStat || undefined,
+        player_id: correctPlayerId === '' ? undefined : correctPlayerId === 'none' ? null : correctPlayerId,
+      });
+      setCorrectingId(null);
+      await load();
+      props.onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not confirm correction');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function skip(c: AnalysisCandidate) {
+    setBusyId(c.id);
+    setError('');
+    try {
+      await api.skipCandidate(c.id);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not skip');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  function startCorrect(c: AnalysisCandidate) {
+    setCorrectingId(c.id);
+    setCorrectStat(c.proposed_stat);
+    setCorrectPlayerId(c.proposed_player_id ?? 'none');
+  }
+
+  return (
+    <section>
+      <button onClick={props.onBack} className="btn-icon"><Icon name="back" />Back</button>
+      <h2 className="btn-icon"><Icon name="ai" size={22} />AI Review Queue</h2>
+      <p>
+        {props.teamName} vs {props.game.opponent || 'TBD'} · Final {props.game.our_score}:
+        {props.game.opponent_score}
+      </p>
+      <p className="sub-hint">
+        AI proposes — you decide. Confirm writes a normal stat event, exactly like a
+        manual tap. Correct changes the stat and/or player first. Skip writes nothing.
+      </p>
+      {error && <p className="error">{error}</p>}
+      {!job ? (
+        <p>No AI analysis yet for this game — run “Analyze video” first.</p>
+      ) : job.status === 'pending' || job.status === 'processing' ? (
+        <p>
+          AI analysis is {job.status === 'pending' ? 'queued' : 'processing'} — waiting for the
+          local worker. Run the worker on your Dell, then refresh.
+        </p>
+      ) : job.status === 'failed' ? (
+        <p className="error">AI analysis failed{job.error ? `: ${job.error}` : '.'}</p>
+      ) : candidates.length === 0 ? (
+        <p>No candidates found — tag manually.</p>
+      ) : (
+        <>
+          <p>
+            {pending.length} candidate{pending.length === 1 ? '' : 's'} to review · {reviewed.length}{' '}
+            reviewed
+          </p>
+          {pending.map((c) => (
+            <div key={c.id} className="candidate-card">
+              {props.game.youtube_video_id && (
+                <YouTubePlayer
+                  videoId={props.game.youtube_video_id}
+                  isLive={false}
+                  startSeconds={Math.max(0, Math.floor(c.clip_start_sec))}
+                />
+              )}
+              <p>
+                <strong>{c.proposed_stat}</strong> · {playerLabel(c.proposed_player_id)}
+              </p>
+              <p className="sub-hint">
+                At {Math.floor(c.timestamp_sec)}s · {confidenceLabel(c.confidence)} (
+                {Math.round(c.confidence * 100)}%)
+              </p>
+              {correctingId === c.id ? (
+                <div className="row">
+                  <select value={correctStat} onChange={(e) => setCorrectStat(e.target.value)}>
+                    {AI_CORRECT_STATS.map((s) => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                  <select value={correctPlayerId} onChange={(e) => setCorrectPlayerId(e.target.value)}>
+                    <option value="none">No player</option>
+                    {props.players.map((p) => (
+                      <option key={p.id} value={p.id}>#{p.jersey_number} {p.name}</option>
+                    ))}
+                  </select>
+                  <button disabled={busyId === c.id} onClick={() => void confirmCorrected(c)} className="btn-icon">
+                    <Icon name="check" />{busyId === c.id ? 'Saving…' : 'Confirm corrected'}
+                  </button>
+                  <button disabled={busyId === c.id} onClick={() => setCorrectingId(null)}>Cancel</button>
+                </div>
+              ) : (
+                <div className="row">
+                  <button disabled={busyId === c.id} onClick={() => void confirm(c)} className="btn-icon">
+                    <Icon name="check" />{busyId === c.id ? 'Saving…' : 'Confirm'}
+                  </button>
+                  <button disabled={busyId === c.id} onClick={() => startCorrect(c)}>Correct</button>
+                  <button disabled={busyId === c.id} onClick={() => void skip(c)}>Skip</button>
+                </div>
+              )}
+            </div>
+          ))}
+          {reviewed.length > 0 && (
+            <>
+              <h3>Reviewed</h3>
+              <ul className="list">
+                {reviewed.map((c) => (
+                  <li key={c.id}>
+                    {c.status === 'skipped'
+                      ? `Skipped — ${c.proposed_stat} (${playerLabel(c.proposed_player_id)})`
+                      : `${c.status === 'corrected' ? 'Corrected' : 'Confirmed'} — ${c.final_stat ?? c.proposed_stat} (${playerName(c.final_player_id ?? c.proposed_player_id)})`}
+                    {' '}· at {Math.floor(c.timestamp_sec)}s
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
         </>
       )}
@@ -2462,6 +2898,7 @@ function GameDetailScreen(props: {
   onSetStatus: (status: 'live' | 'final') => Promise<void>;
   onBack: () => void;
   onLive: () => void;
+  onOpenReview: (gameId: string) => void;
 }) {
   // Box score: per-player counts by stat type, plus points.
   const [copied, setCopied] = useState(false);
@@ -2596,6 +3033,8 @@ function GameDetailScreen(props: {
           status={props.game.status === 'live' ? 'Waiting for stream' : 'No video loaded yet'}
         />
       )}
+
+      <AiAnalysisSection game={props.game} role={props.role} onOpenReview={props.onOpenReview} />
 
       <h3>Watch link</h3>
       {props.game.published && props.game.publish_token ? (
