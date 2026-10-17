@@ -11,6 +11,7 @@ simpligame/
   client/        React + TypeScript + Vite single-page app
   server/        Node + Express + TypeScript API (pg, no ORM)
   migrations/    Plain SQL schema (Neon-compatible)
+  worker/        Python local worker — AI Vision Phase 1 (owner's own machine)
   render.yaml    Render blueprint (free web service)
 ```
 
@@ -226,8 +227,55 @@ Twilio trial accounts can only text numbers verified in the Twilio
 console — verify family numbers there during the trial, or use a paid
 number for full sending.
 
-**Explicitly NOT in v1:** real auth/multi-coach logins, payments,
-real video rendering/clipping, AI stat analysis. Those arrive as
-separate, scoped builds. The server is single-owner by design: when
-multi-org auth lands, every query must scope by the caller's org — see
-`server/src/db.ts`.
+**Explicitly NOT in v1:** payments, real video rendering/clipping.
+Coach logins are built (see below). AI Vision Phase 1 scaffolding is
+built (job API + Review Queue + local worker) — the model itself is
+still a stub in `worker/analyze.py`.
+
+## AI Vision Phase 1 — AI Review Queue (post-game, human-in-the-loop)
+
+The app does NOT watch video and auto-score. The honest version:
+post-game AI proposes candidate plays, and the coach confirms each
+with one tap in the Review Queue. Confirmed candidates become normal
+stat events (same pipeline as a manual tap). Nothing is published as
+AI-detected without a human yes.
+
+**Architecture — worker polls out, no inbound connection:**
+the owner's own machine runs `worker/analyze.py`, which polls the
+server for pending jobs, downloads the game's video itself, runs the
+local model, and POSTs candidates back. The server only stores jobs
++ candidates and serves the Review Queue. NO inference runs on
+Render (it has no GPU). Footage is processed locally on the owner's
+machine and deleted when the job finishes — never uploaded anywhere.
+
+**Our own model:** the model is our own weights, trained on our own
+footage — no competitor's product, no hosted AI API. The pipeline
+starts from a free open architecture (RF-DETR / YOLOX, Apache-2.0)
+and our own training data. `run_model()` in the worker is a stub
+returning `[]` until the real pipeline lands.
+
+**Setup (owner):**
+1. Run `migrations/010_ai_analysis.sql` in the Neon SQL Editor, then
+   restart Render (same pattern as every migration).
+2. Set `WORKER_KEY` in Render env vars (any long random string —
+   generate one, never reuse a password) and restart. The key is
+   never logged.
+3. On the owner's machine (the Dell): `pip install yt-dlp`, set the
+   same `WORKER_KEY` env var, then run:
+   `python3 worker/analyze.py`
+   (`--once` for a single poll cycle, `--interval 30` to poll faster.)
+4. In the app: finish a game with a video attached → **Analyze video**
+   (Game Detail, Live tab Final list, or Highlight Builder) → run the
+   worker → open the **Review Queue** → Confirm / Correct / Skip each
+   candidate.
+
+**Endpoints:** `POST /api/games/:id/analysis-job` (head_coach+),
+`GET /api/games/:id/analysis-job`, `GET /api/analysis/jobs`
+(head_coach+), `GET /api/analysis/jobs/pending` (worker key),
+`POST /api/analysis/jobs/:id/results` (worker key),
+`POST /api/analysis/candidates/:id/confirm|skip` (head_coach+).
+
+**Youth-privacy rules:** only the coach's own team's footage is
+processed; footage is deleted after processing; never use kids'
+video to train a shared/public model without explicit
+parent/guardian consent.
