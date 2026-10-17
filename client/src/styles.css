@@ -1,40 +1,145 @@
+/* SimpliGame design system.
+ *
+ * Built on the organization's brand colors: --brand / --brand2 are set
+ * inline from the org record (default Llamas blue #04BEF1 / #048DF1), so
+ * rebranding the org re-skins the whole app. --gold is the Vegas gold
+ * accent from the SG lettermark. Pure visual layer — no class names here
+ * carry behavior; every screen keeps working exactly as before.
+ */
+
 :root {
-  font-family: system-ui, -apple-system, sans-serif;
-  color: #1a1a1a;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #1c2733;
+  --gold: #b4975a;
+  --ink: #1c2733;
+  --muted: #5b6b7a;
+  --line: #e3e9ef;
+  --surface: #ffffff;
+  --page-bg: #f2f5f8;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 1px 3px rgba(16, 40, 60, 0.08), 0 4px 16px rgba(16, 40, 60, 0.06);
 }
 
 body {
   margin: 0;
-  background: #f6f8fa;
+  background: var(--page-bg);
+}
+
+a {
+  color: var(--brand2, #048df1);
 }
 
 .page {
-  max-width: 900px;
+  max-width: 960px;
   margin: 0 auto;
-  padding: 1rem;
+  padding: 1rem 1rem 3rem;
 }
 
+/* ---- Header: brand gradient, SG mark + org name ---- */
+
 .org-header {
-  background: linear-gradient(90deg, var(--brand, #04bef1), var(--brand2, #048df1));
+  background: linear-gradient(100deg, var(--brand, #04bef1), var(--brand2, #048df1));
   color: #fff;
-  padding: 1rem 1.25rem;
-  border-radius: 8px;
+  padding: 1.25rem 1.5rem;
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  margin-bottom: 1.25rem;
+}
+
+.org-brand-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.org-logo {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  border-radius: 10px;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.35), 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
 .org-header h1 {
   margin: 0;
+  font-size: 1.75rem;
+  letter-spacing: -0.01em;
 }
 
 .org-edit-btn {
-  background: transparent;
+  background: rgba(255, 255, 255, 0.16);
   border: 1px solid rgba(255, 255, 255, 0.6);
   color: #fff;
   margin-left: 0.5rem;
   padding: 0.25rem 0.5rem;
 }
 
+.org-header .tagline {
+  margin: 0.35rem 0 0;
+  opacity: 0.92;
+  font-weight: 600;
+}
+
+.org-header .sub-hint {
+  margin: 0.6rem 0 0;
+  font-size: 0.9rem;
+  opacity: 0.92;
+}
+
+.org-header .sub-hint button {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.6);
+  color: #fff;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.85rem;
+}
+
+.org-header input {
+  background: rgba(255, 255, 255, 0.95);
+}
+
+/* ---- Sections are cards; nested sections stay flat ---- */
+
+section {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.1rem 1.25rem;
+  margin: 0 0 1rem;
+}
+
+section section {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0.5rem 0 0;
+  margin: 0.5rem 0 0;
+}
+
+section > h2:first-child,
+section > h3:first-child {
+  margin-top: 0;
+}
+
+h2 {
+  font-size: 1.25rem;
+  margin: 1.5rem 0 0.5rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 2px solid var(--brand, #04bef1);
+}
+
+h3 {
+  font-size: 1.05rem;
+  margin: 1.25rem 0 0.5rem;
+  color: var(--brand2, #048df1);
+}
+
 .sub-hint {
   font-size: 0.95rem;
+  color: var(--muted);
 }
 
 .tagline {
@@ -42,11 +147,107 @@ body {
   opacity: 0.9;
 }
 
-.error {
-  background: #fdecea;
-  color: #8b1a1a;
-  padding: 0.75rem;
-  border-radius: 6px;
+/* ---- Tab bar (the <nav class="row">) ---- */
+
+nav.row {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+  padding: 0.35rem;
+  margin: 0 0 1rem;
+  gap: 0.25rem;
+}
+
+nav.row button {
+  border: 0;
+  background: transparent;
+  border-radius: 999px;
+  padding: 0.55rem 1.1rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+nav.row button.selected {
+  background: var(--brand, #04bef1);
+  color: #fff;
+  border-color: transparent;
+  box-shadow: 0 2px 8px rgba(4, 141, 241, 0.35);
+}
+
+/* ---- Buttons & inputs ---- */
+
+button {
+  padding: 0.5rem 0.9rem;
+  border: 1px solid #c9d3dc;
+  border-radius: var(--radius-sm);
+  background: #fff;
+  cursor: pointer;
+  font-size: 1rem;
+  font-family: inherit;
+  color: var(--ink);
+  transition: background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--brand, #04bef1);
+  box-shadow: 0 1px 4px rgba(4, 141, 241, 0.18);
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+button.selected {
+  background: var(--brand, #04bef1);
+  color: #fff;
+  border-color: var(--brand, #04bef1);
+}
+
+/* Primary actions (form submits: create, save, log in, verify, export…). */
+button[type="submit"] {
+  background: var(--brand2, #048df1);
+  border-color: var(--brand2, #048df1);
+  color: #fff;
+  font-weight: 600;
+}
+
+button[type="submit"]:hover:not(:disabled) {
+  filter: brightness(1.07);
+}
+
+input,
+select,
+textarea {
+  padding: 0.55rem 0.65rem;
+  border: 1px solid #c9d3dc;
+  border-radius: var(--radius-sm);
+  font-size: 1rem;
+  font-family: inherit;
+  background: #fff;
+  color: var(--ink);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--brand, #04bef1);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand, #04bef1) 22%, transparent);
+}
+
+.field-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+input.wide {
+  flex: 1;
+  min-width: 260px;
 }
 
 .row {
@@ -57,99 +258,127 @@ body {
   align-items: center;
 }
 
-input,
-select,
-textarea {
-  padding: 0.5rem;
-  border: 1px solid #ccc;
-  border-radius: 6px;
-  font-size: 1rem;
-  font-family: inherit;
+/* ---- Notices ---- */
+
+.error {
+  background: #fdecea;
+  color: #8b1a1a;
+  border: 1px solid #f5c2c0;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-sm);
 }
 
-.field-label {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  font-size: 0.9rem;
+.mock-note {
+  background: #fff8e1;
+  border: 1px solid #e6c200;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-sm);
 }
 
-@media print {
-  /* Print/PDF of a public profile: hide interactive controls, keep the
-   * content. The org header stays as the profile letterhead. */
-  .no-print {
-    display: none;
-  }
-
-  body {
-    background: #fff;
-  }
-
-  .page {
-    max-width: none;
-    padding: 0;
-  }
-}
-
-input.wide {
-  flex: 1;
-  min-width: 260px;
-}
-
-button {
-  padding: 0.5rem 0.9rem;
-  border: 1px solid #ccc;
-  border-radius: 6px;
-  background: #fff;
-  cursor: pointer;
-  font-size: 1rem;
-}
-
-button.selected {
-  background: var(--brand, #04bef1);
-  color: #fff;
-  border-color: var(--brand, #04bef1);
-}
+/* ---- Lists ---- */
 
 .list {
   list-style: none;
   padding: 0;
+  margin: 0.5rem 0;
 }
 
 .list li {
-  padding: 0.4rem 0;
-  border-bottom: 1px solid #e5e5e5;
+  padding: 0.55rem 0.25rem;
+  border-bottom: 1px solid var(--line);
 }
+
+.list li:last-child {
+  border-bottom: 0;
+}
+
+/* ---- Cards & stat-tagging buttons (live game) ---- */
 
 .cards {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
-  margin: 0.5rem 0;
+  gap: 0.65rem;
+  margin: 0.75rem 0;
 }
 
 .card {
   min-width: 110px;
   text-align: center;
-  padding: 0.75rem;
+  padding: 0.9rem 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
 }
 
+/* On-court / bench player buttons + stat buttons: big, tappable. */
+.cards button {
+  min-height: 56px;
+  min-width: 76px;
+  font-weight: 600;
+  font-size: 1.05rem;
+  border-radius: var(--radius);
+  border: 1.5px solid var(--line);
+  box-shadow: var(--shadow);
+}
+
+.cards button.selected {
+  border-color: var(--brand, #04bef1);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand, #04bef1) 30%, transparent);
+}
+
+.clip-row {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+/* ---- Score & tables ---- */
+
 .score {
-  font-size: 1.5rem;
-  font-weight: 700;
+  font-size: 2rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: var(--brand2, #048df1);
 }
 
 .boxscore {
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.boxscore th {
+  background: color-mix(in srgb, var(--brand, #04bef1) 12%, #ffffff);
+  color: var(--ink);
+  font-weight: 700;
 }
 
 .boxscore th,
 .boxscore td {
-  border: 1px solid #ddd;
-  padding: 0.5rem;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  padding: 0.55rem 0.75rem;
   text-align: left;
 }
+
+.boxscore tr:last-child th,
+.boxscore tr:last-child td {
+  border-bottom: 0;
+}
+
+.boxscore tbody tr:nth-child(even) td {
+  background: #f7fafc;
+}
+
+/* ---- Video ---- */
 
 .yt-wrap {
   position: relative;
@@ -157,8 +386,9 @@ button.selected {
   max-width: 720px;
   aspect-ratio: 16 / 9;
   background: #000;
-  border-radius: 8px;
+  border-radius: var(--radius);
   overflow: hidden;
+  box-shadow: var(--shadow);
 }
 
 .yt-player {
@@ -183,23 +413,58 @@ button.selected {
 
 .yt-error {
   max-width: 720px;
-  background: #fff3cd;
+  background: #fff8e1;
   border: 1px solid #e6c200;
   padding: 1rem;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
 }
 
-.mock-note {
-  background: #fff3cd;
-  border: 1px solid #e6c200;
-  padding: 0.75rem;
-  border-radius: 6px;
+@media (max-width: 560px) {
+  .page {
+    padding: 0.75rem 0.75rem 2rem;
+  }
+
+  .org-header {
+    padding: 1rem;
+  }
+
+  .org-header h1 {
+    font-size: 1.45rem;
+  }
+
+  .org-logo {
+    width: 36px;
+    height: 36px;
+  }
+
+  section {
+    padding: 0.9rem;
+  }
+
+  .score {
+    font-size: 1.6rem;
+  }
 }
 
-.clip-row {
-  background: #fff;
-  border: 1px solid #e5e5e5;
-  border-radius: 6px;
-  padding: 0.5rem;
-  margin-bottom: 0.5rem;
+@media print {
+  /* Print/PDF of a public profile: hide interactive controls, keep the
+   * content. The org header stays as the profile letterhead. */
+  .no-print {
+    display: none;
+  }
+
+  body {
+    background: #fff;
+  }
+
+  .page {
+    max-width: none;
+    padding: 0;
+  }
+
+  section {
+    box-shadow: none;
+    border: 0;
+    padding: 0;
+  }
 }
