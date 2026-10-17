@@ -36,8 +36,17 @@ function base64Url(input: Buffer | string): string {
 function buildJwt(): string {
   const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL as string;
   const rawKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY as string;
-  // Render env vars store the PEM key with literal \n escapes.
-  const privateKey = rawKey.replace(/\\n/g, '\n');
+  // Render env vars store the PEM key with literal \n escapes — but pastes
+  // arrive in several shapes (single-escaped \n, double-escaped \\n, real
+  // newlines, surrounding quotes). Normalize all of them before signing.
+  let privateKey = rawKey.trim();
+  if (
+    (privateKey.startsWith('"') && privateKey.endsWith('"')) ||
+    (privateKey.startsWith("'") && privateKey.endsWith("'"))
+  ) {
+    privateKey = privateKey.slice(1, -1);
+  }
+  privateKey = privateKey.replace(/\\\\n/g, '\n').replace(/\\n/g, '\n');
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: 'RS256', typ: 'JWT' };
   const payload = {
