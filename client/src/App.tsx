@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api } from './api';
-import type { AnalysisCandidate, AnalysisJob, AuthUser, Coach, EnrollInfo, FamilyContact, Game, GameAnalysis, GameEvent, LineupRow, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Team, Workspace } from './types';
+import { api, uploadFileToDriveSession } from './api';
+import type { AnalysisCandidate, AnalysisJob, AuthUser, Coach, EnrollInfo, FamilyContact, Game, GameAnalysis, GameEvent, GoogleStatus, ImportedVideo, LineupRow, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Team, Workspace } from './types';
 import YouTubePlayer from './components/YouTubePlayer';
 import VideoPlaceholder from './components/VideoPlaceholder';
 import Icon, { type IconName } from './components/Icon';
@@ -106,6 +106,19 @@ export default function App() {
 
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [view, setView] = useState<View>({ kind: 'home' });
+  // Google Drive connect returns to the app with a ?google=<flag> —
+  // read it once, land on the Account screen (which shows the result),
+  // and scrub it from the URL so a refresh doesn't repeat the landing.
+  const [googleFlag, setGoogleFlag] = useState<string | null>(() =>
+    typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search).get('google')
+      : null,
+  );
+  useEffect(() => {
+    if (googleFlag) {
+      window.history.replaceState(null, '', window.location.pathname);
+    }
+  }, [googleFlag]);
   const [selectedTeamId, setSelectedTeamId] = useState<string>('');
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
   const [error, setError] = useState<string>('');
@@ -168,6 +181,8 @@ export default function App() {
       .then(async (meResult) => {
         if (meResult.user) {
           setMe(meResult.user);
+          // Returning from the Google Drive connect flow → Account.
+          if (googleFlag) setView({ kind: 'account' });
           await refresh();
         } else {
           const status = await api.getAuthStatus();
@@ -577,8 +592,10 @@ export default function App() {
           teams={workspace.teams}
           events={workspace.events}
           players={workspace.players}
+          currentUserId={me.id}
           onOpen={(reelId) => setView({ kind: 'studio', reelId })}
           onOpenReview={(gameId) => setView({ kind: 'review', gameId, returnTo: 'highlights' })}
+          onOpenAccount={() => setView({ kind: 'account' })}
         />
       )}
 
@@ -616,6 +633,7 @@ export default function App() {
           onSaved={(user) => setMe(user)}
           orgName={org.name}
           onOrganizationChanged={() => void refresh()}
+          googleFlag={googleFlag}
         />
       )}
 
@@ -1561,8 +1579,10 @@ function HighlightBuilderScreen(props: {
   teams: Team[];
   events: GameEvent[];
   players: Player[];
+  currentUserId: string;
   onOpen: (reelId: string) => void;
   onOpenReview: (gameId: string) => void;
+  onOpenAccount: () => void;
 }) {
   return (
     <>
@@ -1582,8 +1602,279 @@ function HighlightBuilderScreen(props: {
         players={props.players}
         onOpen={props.onOpen}
       />
+      <ImportVideoSection
+        role={props.role}
+        teams={props.teams}
+        currentUserId={props.currentUserId}
+        onOpenAccount={props.onOpenAccount}
+      />
       <ReelsListScreen role={props.role} games={props.games} teams={props.teams} onOpen={props.onOpen} />
     </>
+  );
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB';
+  const mb = bytes / (1024 * 1024);
+  if (mb < 1024) return `${mb.toFixed(mb >= 100 ? 0 : 1)} MB`;
+  return `${(mb / 1024).toFixed(2)} GB`;
+}
+
+/** HTML5 player for an imported Drive video. Fetches a short-lived
+ *  media URL, seeks to startSeconds once metadata loads, and (when
+ *  endSeconds is given) pauses there — the same clip-window behavior
+ *  the YouTube preview approximates. Used by the library Play button
+ *  and the Reel Studio preview. */
+function ImportedVideoPlayer(props: {
+  videoId: string;
+  startSeconds?: number;
+  endSeconds?: number;
+  onTimeUpdate?: (seconds: number) => void;
+}) {
+  const [url, setUrl] = useState('');
+  const [error, setError] = useState('');
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setUrl('');
+    setError('');
+    api
+      .getImportedMediaUrl(props.videoId)
+      .then((r) => {
+        if (!cancelled) setUrl(r.url);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : 'Could not load this video.');
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+    // startSeconds/endSeconds are read at seek time, not fetch triggers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.videoId]);
+
+  if (error) {
+    return (
+      <div className="yt-error">
+        <strong>This video couldn’t play here.</strong>
+        <p>{error}</p>
+      </div>
+    );
+  }
+  if (!url) {
+    return (
+      <div className="yt-wrap">
+        <div className="yt-loading">Loading video…</div>
+      </div>
+    );
+  }
+  return (
+    <div className="yt-wrap">
+      <video
+        ref={videoRef}
+        className="drive-video"
+        src={url}
+        controls
+        preload="metadata"
+        playsInline
+        onLoadedMetadata={() => {
+          const v = videoRef.current;
+          if (v && props.startSeconds) v.currentTime = props.startSeconds;
+        }}
+        onTimeUpdate={() => {
+          const v = videoRef.current;
+          if (!v) return;
+          props.onTimeUpdate?.(v.currentTime);
+          if (props.endSeconds && v.currentTime >= props.endSeconds) v.pause();
+        }}
+      />
+    </div>
+  );
+}
+
+/** Import video: files that were NOT streamed in the app, uploaded to
+ *  the coach's OWN Google Drive (drive.file scope — the file lives in
+ *  their Drive, tied to them). The browser sends the file straight to
+ *  Google via a resumable session; the server never sees the bytes. */
+function ImportVideoSection(props: {
+  role: ClientRole;
+  teams: Team[];
+  currentUserId: string;
+  onOpenAccount: () => void;
+}) {
+  const [status, setStatus] = useState<GoogleStatus | null>(null);
+  const [videos, setVideos] = useState<ImportedVideo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [file, setFile] = useState<File | null>(null);
+  const [title, setTitle] = useState('');
+  const [teamId, setTeamId] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [playingId, setPlayingId] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const [s, v] = await Promise.all([api.getGoogleStatus(), api.listImportedVideos()]);
+      setStatus(s);
+      setVideos(v);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load imported videos.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function handleUpload() {
+    if (!file) return;
+    setError('');
+    setSuccess('');
+    setUploading(true);
+    setProgress(0);
+    try {
+      const init = await api.initImportedUpload({
+        title: title.trim() || file.name.replace(/\.[^.]+$/, ''),
+        team_id: teamId || null,
+        mime_type: file.type,
+        size_bytes: file.size,
+      });
+      const { driveFileId } = await uploadFileToDriveSession(init.uploadUrl, file, setProgress);
+      const video = await api.completeImportedUpload(init.videoId, driveFileId);
+      setSuccess(`“${video.title}” imported into your Google Drive.`);
+      setFile(null);
+      setTitle('');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Import failed.');
+      await load();
+    } finally {
+      setUploading(false);
+      setProgress(0);
+    }
+  }
+
+  async function handleDelete(video: ImportedVideo) {
+    setError('');
+    setSuccess('');
+    try {
+      await api.deleteImportedVideo(video.id);
+      if (playingId === video.id) setPlayingId(null);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to delete the import.');
+    }
+  }
+
+  return (
+    <section>
+      <h2 className="btn-icon"><Icon name="video" size={22} />Import video</h2>
+      <p>
+        Add game film that wasn&apos;t streamed in the app. Imports upload to <strong>your own
+        Google Drive</strong> (a “SimpliGame” folder) and become clip sources in Reel Studio.
+      </p>
+      {error && <p className="error">{error}</p>}
+      {success && <p>{success}</p>}
+      {loading ? (
+        <p>Loading…</p>
+      ) : status?.setupRequired ? (
+        <p className="mock-note">
+          Drive import is not set up yet — the server needs migration 011 (ask the owner).
+        </p>
+      ) : status && !status.connected ? (
+        <>
+          <p>Connect Google Drive first — it takes one sign-in, and imports live in your Drive, not the app&apos;s.</p>
+          <button onClick={props.onOpenAccount} className="btn-icon">
+            <Icon name="video" />Connect Google Drive in Account
+          </button>
+        </>
+      ) : (
+        <>
+          <div className="row">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="video/*"
+              onChange={(e) => {
+                const f = e.target.files?.[0] ?? null;
+                setFile(f);
+                if (f && !title.trim()) setTitle(f.name.replace(/\.[^.]+$/, ''));
+              }}
+            />
+            <input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Title (e.g. Scrimmage vs West — full game)"
+              maxLength={150}
+              className="wide"
+            />
+            <select value={teamId} onChange={(e) => setTeamId(e.target.value)}>
+              <option value="">No team</option>
+              {props.teams.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+            <button disabled={!file || uploading} onClick={handleUpload} className="btn-icon">
+              <Icon name="export" />
+              {uploading ? 'Uploading…' : 'Import video'}
+            </button>
+          </div>
+          {uploading && (
+            <div className="upload-progress-row">
+              <div className="upload-progress">
+                <div
+                  className="upload-progress-fill"
+                  style={{ width: `${Math.round(progress * 100)}%` }}
+                />
+              </div>
+              <span>{Math.round(progress * 100)}%</span>
+            </div>
+          )}
+          {videos.length === 0 ? (
+            <p>No imported videos yet.</p>
+          ) : (
+            <ul className="list">
+              {videos.map((v) => {
+                const team = props.teams.find((t) => t.id === v.team_id);
+                const canDelete = v.mine || props.role === 'owner';
+                return (
+                  <li key={v.id}>
+                    <strong>{v.title}</strong>{' '}
+                    <small>
+                      {team ? `${team.name} · ` : ''}
+                      {formatBytes(v.size_bytes)} ·{' '}
+                      {v.ready ? 'in your Drive' : 'upload incomplete'}
+                    </small>{' '}
+                    {v.ready && (
+                      <button onClick={() => setPlayingId(playingId === v.id ? null : v.id)}>
+                        {playingId === v.id ? 'Hide' : 'Play'}
+                      </button>
+                    )}{' '}
+                    {canDelete && (
+                      <button onClick={() => void handleDelete(v)}>Delete</button>
+                    )}
+                    {playingId === v.id && (
+                      <ImportedVideoPlayer key={v.id} videoId={v.id} />
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 
@@ -1700,6 +1991,8 @@ function EventsByPlayerSection(props: {
           eventId: e.id,
           gameId: e.game_id,
           videoId: game.youtube_video_id,
+          importedVideoId: null,
+          playerTag: null,
           startSeconds: Math.max(0, e.video_seconds - 2),
           endSeconds: e.video_seconds + 8,
           transition: 'cut' as const,
@@ -2345,11 +2638,13 @@ function AccountScreen({
   onSaved,
   orgName,
   onOrganizationChanged,
+  googleFlag,
 }: {
   me: AuthUser;
   onSaved: (user: AuthUser) => void;
   orgName: string;
   onOrganizationChanged: () => void;
+  googleFlag: string | null;
 }) {
   const [name, setName] = useState(me.name);
   const [email, setEmail] = useState(me.email);
@@ -2409,11 +2704,108 @@ function AccountScreen({
       {me.role === 'owner' && (
         <OrganizationSection orgName={orgName} onChanged={onOrganizationChanged} />
       )}
+      <GoogleDriveSection googleFlag={googleFlag} />
       <section>
         <h2>Password</h2>
         <ChangePasswordForm />
       </section>
     </>
+  );
+}
+
+/** Result banners for the Google connect round-trip (?google=<flag>). */
+const GOOGLE_FLAG_MESSAGES: Record<string, { ok: boolean; text: string }> = {
+  connected: { ok: true, text: 'Google Drive connected.' },
+  denied: { ok: false, text: 'Google Drive connection was cancelled — nothing was connected.' },
+  failed: { ok: false, text: 'Something went wrong connecting Google Drive — please try again.' },
+  'not-configured': {
+    ok: false,
+    text: 'Google Drive is not configured on the server yet — ask the owner to finish the setup.',
+  },
+  session: {
+    ok: false,
+    text: 'Your sign-in changed during the Google connect — sign in and try connecting again.',
+  },
+  'login-required': { ok: false, text: 'Sign in first, then connect Google Drive.' },
+  setup: {
+    ok: false,
+    text: 'Drive import is not set up yet — the server needs migration 011 (ask the owner).',
+  },
+};
+
+/** Per-user Google Drive connection (video import storage). Imported
+ *  videos live in the coach's OWN Drive under a "SimpliGame" folder,
+ *  with drive.file scope — the app can only touch files it created.
+ *  Connect is a full-page trip to Google and back (?google= flag);
+ *  this section shows the outcome and the live connection status. */
+function GoogleDriveSection({ googleFlag }: { googleFlag: string | null }) {
+  const [status, setStatus] = useState<GoogleStatus | null>(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      setStatus(await api.getGoogleStatus());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to check Google Drive status.');
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function handleDisconnect() {
+    setBusy(true);
+    setError('');
+    try {
+      await api.disconnectGoogle();
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to disconnect Google Drive.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const flag = googleFlag ? GOOGLE_FLAG_MESSAGES[googleFlag] : undefined;
+
+  return (
+    <section>
+      <h2>Google Drive</h2>
+      <p>
+        Imported videos are stored in <strong>your own</strong> Google Drive (in a “SimpliGame”
+        folder) — tied to you, not the app. SimpliGame can only access files it created there.
+      </p>
+      {flag && <p className={flag.ok ? '' : 'error'}>{flag.text}</p>}
+      {error && <p className="error">{error}</p>}
+      {status === null ? (
+        <p>Checking connection…</p>
+      ) : status.setupRequired ? (
+        <p className="mock-note">
+          Drive import is not set up yet — the server needs migration 011 (ask the owner).
+        </p>
+      ) : status.connected ? (
+        <div className="row">
+          <span>
+            Connected{status.email ? ` as ${status.email}` : ''}
+          </span>
+          <button type="button" onClick={handleDisconnect} disabled={busy}>
+            {busy ? 'Disconnecting…' : 'Disconnect'}
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="btn-icon"
+          onClick={() => {
+            window.location.href = '/api/auth/google/connect';
+          }}
+        >
+          <Icon name="video" />Connect Google Drive
+        </button>
+      )}
+    </section>
   );
 }
 
@@ -4976,7 +5368,15 @@ function ReelStudioScreen(props: { role: ClientRole; reelId: string; workspace: 
     const r = await api.getReel(props.reelId);
     setReel(r);
     setName(r.name);
-    setClips(r.clips);
+    // Clips saved before imported videos existed lack the new fields —
+    // normalize so every clip in state has the full shape.
+    setClips(
+      r.clips.map((c) => ({
+        ...c,
+        importedVideoId: typeof c.importedVideoId === 'string' ? c.importedVideoId : null,
+        playerTag: typeof c.playerTag === 'string' ? c.playerTag : null,
+      })),
+    );
     setMusicTrack(r.music_track);
   }, [props.reelId]);
 
@@ -5143,7 +5543,14 @@ function ReelStudioScreen(props: { role: ClientRole; reelId: string; workspace: 
             {previewClip?.slowMo ? ' · slow motion' : ''} · transition:{' '}
             {previewClip?.transition ?? 'cut'}
           </p>
-          {previewClip?.videoId ? (
+          {previewClip?.importedVideoId ? (
+            <ImportedVideoPlayer
+              key={`imp-${previewIndex}`}
+              videoId={previewClip.importedVideoId}
+              startSeconds={previewClip.startSeconds}
+              endSeconds={previewClip.endSeconds}
+            />
+          ) : previewClip?.videoId ? (
             <YouTubePlayer
               videoId={previewClip.videoId}
               isLive={false}
@@ -5192,7 +5599,11 @@ function ReelStudioScreen(props: { role: ClientRole; reelId: string; workspace: 
                 {i + 1}. {clip.overlay || `Clip ${i + 1}`}
               </strong>{' '}
               <small>
-                {clip.videoId ? 'video attached' : 'no video'} · {formatTimestamp(clip.startSeconds)} →{' '}
+                {clip.importedVideoId
+                  ? `imported video${clip.playerTag ? ` · ${clip.playerTag}` : ''}`
+                  : clip.videoId
+                    ? 'video attached'
+                    : 'no video'} · {formatTimestamp(clip.startSeconds)} →{' '}
                 {formatTimestamp(clip.endSeconds)}
               </small>
               <div className="row">
@@ -5302,6 +5713,8 @@ function ReelStudioScreen(props: { role: ClientRole; reelId: string; workspace: 
                         eventId: e.id,
                         gameId: e.game_id,
                         videoId: addGame.youtube_video_id,
+                        importedVideoId: null,
+                        playerTag: null,
                         startSeconds: Math.max(0, e.video_seconds - 2),
                         endSeconds: e.video_seconds + 8,
                         transition: 'cut',
@@ -5318,7 +5731,136 @@ function ReelStudioScreen(props: { role: ClientRole; reelId: string; workspace: 
           })}
         </ul>
       )}
+
+      <AddImportedClipSection
+        players={props.workspace.players}
+        onAdd={(clip) => setClips((prev) => [...prev, clip])}
+      />
     </section>
+  );
+}
+
+/** Add a clip from an imported Drive video: pick the source, play it
+ *  (real seek — Drive media URLs support Range), set in/out points,
+ *  optionally tag a player (label only, for the overlay), and add it
+ *  to the reel. Imported clips save alongside YouTube clips in the
+ *  same reel — the preview handles both player types. */
+function AddImportedClipSection(props: {
+  players: Player[];
+  onAdd: (clip: ReelClip) => void;
+}) {
+  const [videos, setVideos] = useState<ImportedVideo[]>([]);
+  const [selectedId, setSelectedId] = useState('');
+  const [inPoint, setInPoint] = useState(0);
+  const [outPoint, setOutPoint] = useState(10);
+  const [playerTag, setPlayerTag] = useState('');
+  const [added, setAdded] = useState(false);
+  const timeRef = useRef(0);
+
+  useEffect(() => {
+    api
+      .listImportedVideos()
+      .then((v) => setVideos(v.filter((x) => x.ready)))
+      .catch(() => {
+        // Import may not be set up yet — the section just stays empty.
+      });
+  }, []);
+
+  const selected = videos.find((v) => v.id === selectedId);
+
+  return (
+    <>
+      <h3>Add from imported video</h3>
+      {videos.length === 0 ? (
+        <p>
+          No imported videos yet — import game film in Highlight Builder (it lives in the
+          uploader&apos;s own Google Drive).
+        </p>
+      ) : (
+        <>
+          <div className="row">
+            <select
+              value={selectedId}
+              onChange={(e) => {
+                setSelectedId(e.target.value);
+                setInPoint(0);
+                setOutPoint(10);
+                setAdded(false);
+              }}
+            >
+              <option value="">Pick an imported video…</option>
+              {videos.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.title}
+                </option>
+              ))}
+            </select>
+          </div>
+          {selected && (
+            <>
+              <ImportedVideoPlayer
+                key={selected.id}
+                videoId={selected.id}
+                onTimeUpdate={(t) => {
+                  timeRef.current = t;
+                }}
+              />
+              <div className="row">
+                <button
+                  onClick={() => setInPoint(Math.max(0, Math.floor(timeRef.current)))}
+                >
+                  Set in ({formatTimestamp(inPoint)})
+                </button>
+                <button onClick={() => setOutPoint(Math.max(inPoint + 1, Math.ceil(timeRef.current)))}>
+                  Set out ({formatTimestamp(outPoint)})
+                </button>
+                <label className="field-label">
+                  Player tag (optional)
+                  <select value={playerTag} onChange={(e) => setPlayerTag(e.target.value)}>
+                    <option value="">No player tag</option>
+                    {props.players.map((p) => {
+                      const tag = `#${p.jersey_number} ${p.name}`;
+                      return (
+                        <option key={p.id} value={tag}>
+                          {tag}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </label>
+                <button
+                  disabled={outPoint <= inPoint}
+                  onClick={() => {
+                    props.onAdd({
+                      eventId: null,
+                      gameId: null,
+                      videoId: null,
+                      importedVideoId: selected.id,
+                      playerTag: playerTag || null,
+                      startSeconds: inPoint,
+                      endSeconds: outPoint,
+                      transition: 'cut',
+                      overlay: playerTag ? `${playerTag} — ${selected.title}` : selected.title,
+                      slowMo: false,
+                    });
+                    setAdded(true);
+                  }}
+                >
+                  Add clip to reel
+                </button>
+              </div>
+              {added && <p>Clip added — remember to Save reel.</p>}
+              <p>
+                <small>
+                  Play the video, pause at the moment, then Set in / Set out. The player tag is a
+                  label for the overlay only — it does not change any stats.
+                </small>
+              </p>
+            </>
+          )}
+        </>
+      )}
+    </>
   );
 }
 
