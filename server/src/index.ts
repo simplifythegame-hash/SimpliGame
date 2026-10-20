@@ -3096,6 +3096,34 @@ app.get('/privacy', (_req, res) => {
 </body></html>`);
 });
 
+// ------------------------------------------- public terms of service
+// Served at /terms, linked from the app footer. Plain-language terms
+// stating the owner's rights in the software and design.
+app.get('/terms', (_req, res) => {
+  res.type('html').send(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SimpliGame — Terms of Service</title>
+<style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:760px;margin:40px auto;padding:0 20px;line-height:1.6;color:#1a1a1a}h1{font-size:28px}h2{font-size:19px;margin-top:28px}a{color:#16408F}</style>
+</head><body>
+<h1>SimpliGame Terms of Service</h1>
+<p><strong>Effective date:</strong> October 19, 2026</p>
+<p>SimpliGame ("the App") is a stat-tracking and video tool for youth and amateur sports clubs. By using the App, you agree to these terms.</p>
+<h2>Intellectual property</h2>
+<p>The App — including its software, design, layout, features, graphics, and content (other than team data entered by coaches, described below) — is the intellectual property of SimpliGame. © 2026 SimpliGame. All rights reserved.</p>
+<h2>Prohibited actions</h2>
+<p>You may not reverse-engineer, decompile, scrape, copy, clone, or redistribute the App, its software, or its design, in whole or in part, except where such a restriction is prohibited by applicable law. You may not use the App to build a competing copy of the service, and you may not access accounts, teams, or data that are not yours.</p>
+<h2>Your data</h2>
+<p>Coaches and clubs own the team data they enter into the App (rosters, game data, profiles, and contact information families enroll). SimpliGame processes that data only to operate the service — for example, to generate box scores, watch links, profiles, reels, exports, and alerts — and does not sell it or use it for advertising.</p>
+<h2>Service provided as-is</h2>
+<p>The App is provided "as is" and "as available," without warranties of any kind, express or implied. We do not guarantee the App will be uninterrupted, error-free, or that stats, video, or exports will always be accurate or complete. Your use of the App is at your own risk.</p>
+<h2>Changes to these terms</h2>
+<p>The owner may update these terms at any time. Updates will be posted at this URL. Continued use of the App after a change means you accept the updated terms.</p>
+<h2>Contact</h2>
+<p>Questions about these terms: <a href="mailto:APP_CONTACT_EMAIL">APP_CONTACT_EMAIL</a>.</p>
+</body></html>`);
+});
+
 
 // In production the client build (client/dist) is served by this server,
 // so one Render web service hosts the whole app.
