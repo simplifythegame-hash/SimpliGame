@@ -63,6 +63,7 @@ type View =
   | { kind: 'exports' }
   | { kind: 'review'; gameId: string; returnTo: 'live' | 'teams' | 'highlights' }
   | { kind: 'account' }
+  | { kind: 'phones' }
   | { kind: 'coaches' };
 
 /**
@@ -343,7 +344,9 @@ export default function App() {
                         ? 'exports'
                         : view.kind === 'coaches'
                           ? 'coaches'
-                          : 'account';
+                          : view.kind === 'phones'
+                            ? 'phones'
+                            : 'account';
 
   async function handleLogout() {
     try {
@@ -411,6 +414,7 @@ export default function App() {
         <SettingsMenu
           role={me.role}
           onOpenAccount={() => setView({ kind: 'account' })}
+          onOpenPhones={() => setView({ kind: 'phones' })}
           onOpenCoaches={() => setView({ kind: 'coaches' })}
           onLogout={handleLogout}
         />
@@ -667,6 +671,14 @@ export default function App() {
 
       {view.kind === 'account' && (
         <AccountScreen me={me} onSaved={(user) => setMe(user)} />
+      )}
+
+      {view.kind === 'phones' && canRole(me.role, 'head_coach') && (
+        <PhoneNumbersScreen
+          teams={workspace.teams}
+          players={workspace.players}
+          onChanged={() => void refresh()}
+        />
       )}
 
       {view.kind === 'coaches' && me.role === 'owner' && (
@@ -2079,13 +2091,14 @@ function SetupScreen({ onDone }: { onDone: (user: AuthUser) => void }) {
   );
 }
 
-/** Upper-right header menu (hamburger): Account / Coaches (owner only) /
- *  Logout. Owns no account logic of its own — it relocates the controls
- *  that used to live in the header and sidebar. Closes on outside click,
- *  Esc, or choosing an item. */
+/** Upper-right header menu (hamburger): Account / Phone Numbers
+ *  (head_coach+) / Coaches (owner only) / Logout. Owns no logic of its
+ *  own — it relocates the controls that used to live in the header and
+ *  sidebar. Closes on outside click, Esc, or choosing an item. */
 function SettingsMenu(props: {
   role: ClientRole;
   onOpenAccount: () => void;
+  onOpenPhones: () => void;
   onOpenCoaches: () => void;
   onLogout: () => void;
 }) {
@@ -2132,6 +2145,11 @@ function SettingsMenu(props: {
           <button type="button" role="menuitem" onClick={() => choose(props.onOpenAccount)}>
             <Icon name="players" size={18} />Account
           </button>
+          {canRole(props.role, 'head_coach') && (
+            <button type="button" role="menuitem" onClick={() => choose(props.onOpenPhones)}>
+              <Icon name="phone" size={18} />Phone Numbers
+            </button>
+          )}
           {props.role === 'owner' && (
             <button type="button" role="menuitem" onClick={() => choose(props.onOpenCoaches)}>
               <Icon name="coaches" size={18} />Coaches
@@ -2289,6 +2307,159 @@ function ChangePasswordForm() {
           {error && <p className="error">{error}</p>}
           {success && <p>{success}</p>}
         </form>
+      )}
+    </div>
+  );
+}
+
+/** Phone Numbers (head_coach+, from the header ☰ menu): the central hub
+ *  for the family text-alert enrollment system — the same per-player
+ *  enroll links + masked contacts managed in the player profile, for
+ *  every player at once, grouped by team. Families still self-enroll
+ *  their own numbers via the link; the coach never types numbers here,
+ *  and numbers are only ever shown MASKED. */
+function PhoneNumbersScreen(props: { teams: Team[]; players: Player[]; onChanged: () => void }) {
+  return (
+    <>
+      <section>
+        <h2>Phone Numbers</h2>
+        <p>
+          Family text alerts for every team. Send each player&apos;s family their enrollment
+          link — families sign themselves up with their own number, and numbers stay masked
+          here.
+        </p>
+      </section>
+      {props.teams.map((team) => {
+        const teamPlayers = props.players.filter((p) => p.team_id === team.id);
+        if (teamPlayers.length === 0) return null;
+        return (
+          <section key={team.id}>
+            <h3>{team.name}</h3>
+            {teamPlayers.map((player) => (
+              <PlayerPhoneCard key={player.id} player={player} onChanged={props.onChanged} />
+            ))}
+          </section>
+        );
+      })}
+      {props.players.length === 0 && (
+        <section>
+          <p>No players yet — add players on the Team tab first.</p>
+        </section>
+      )}
+    </>
+  );
+}
+
+/** One player's enrollment management: the enroll link (generate / copy /
+ *  regenerate — the existing per-player token flow) and the enrolled
+ *  family contacts, masked, with remove. */
+function PlayerPhoneCard(props: { player: Player; onChanged: () => void }) {
+  const playerId = props.player.id;
+  const [token, setToken] = useState<string | null>(props.player.enroll_token);
+  const [contacts, setContacts] = useState<FamilyContact[]>([]);
+  const [loadingContacts, setLoadingContacts] = useState(true);
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    setToken(props.player.enroll_token);
+  }, [props.player.enroll_token]);
+
+  const loadContacts = useCallback(async () => {
+    setContacts(await api.getFamily(playerId));
+  }, [playerId]);
+
+  useEffect(() => {
+    loadContacts()
+      .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load contacts'))
+      .finally(() => setLoadingContacts(false));
+  }, [loadContacts]);
+
+  async function run(action: () => Promise<unknown>) {
+    setError('');
+    try {
+      await action();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Something went wrong');
+    }
+  }
+
+  async function generateLink() {
+    await run(async () => {
+      const result = await api.generateEnrollToken(playerId);
+      setToken(result.enrollToken);
+      props.onChanged();
+    });
+  }
+
+  const link = token ? `${window.location.origin}/enroll/${token}` : null;
+
+  return (
+    <div>
+      <h4>
+        #{props.player.jersey_number} {props.player.name} — {props.player.position}
+      </h4>
+      {error && <p className="error">{error}</p>}
+      {link ? (
+        <>
+          <div className="row">
+            <input readOnly value={link} className="wide" onFocus={(e) => e.target.select()} />
+            <button
+              type="button"
+              className="btn-icon"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(link);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                } catch {
+                  // Clipboard unavailable — the input above is selected on
+                  // focus, so the coach can copy it manually.
+                }
+              }}
+            >
+              <Icon name="copy" />{copied ? 'Copied!' : 'Copy link'}
+            </button>
+            <button type="button" className="btn-icon" onClick={generateLink}>
+              <Icon name="refresh" />Regenerate link
+            </button>
+          </div>
+          <p>
+            <small>Regenerating the link kills the old one.</small>
+          </p>
+        </>
+      ) : (
+        <div className="row">
+          <span>No enrollment link yet.</span>
+          <button type="button" className="btn-icon" onClick={generateLink}>
+            <Icon name="plus" />Create enrollment link
+          </button>
+        </div>
+      )}
+      {loadingContacts ? (
+        <p>Loading contacts…</p>
+      ) : contacts.length === 0 ? (
+        <p>No family contacts yet.</p>
+      ) : (
+        <ul className="list">
+          {contacts.map((c) => (
+            <li key={c.id}>
+              {c.display_name ? `${c.display_name} — ` : ''}
+              {c.masked_phone} {c.opted_in ? '(opted in)' : '(opted out)'}{' '}
+              <button
+                type="button"
+                onClick={() =>
+                  run(async () => {
+                    await api.removeFamily(c.id);
+                    await loadContacts();
+                  })
+                }
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );
