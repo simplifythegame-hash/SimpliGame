@@ -670,6 +670,7 @@ export default function App() {
       )}
       </main>
       </div>
+      <AppFooter />
     </div>
   );
 }
@@ -1969,6 +1970,19 @@ function ReviewQueueScreen(props: {
   );
 }
 
+/** Small footer on the app shell, login, and setup screens: IP notice +
+ *  links to the privacy policy and terms. Static server pages open in a
+ *  new tab so the app's SPA state is never disturbed. */
+function AppFooter() {
+  return (
+    <footer className="app-footer">
+      © 2026 SimpliGame ·{' '}
+      <a href="/privacy" target="_blank" rel="noreferrer">Privacy</a> ·{' '}
+      <a href="/terms" target="_blank" rel="noreferrer">Terms</a>
+    </footer>
+  );
+}
+
 /** Login screen: shown when no session exists and users already exist. */
 function LoginScreen({ onDone }: { onDone: (user: AuthUser) => void }) {
   const [email, setEmail] = useState('');
@@ -2005,6 +2019,7 @@ function LoginScreen({ onDone }: { onDone: (user: AuthUser) => void }) {
           <button type="submit" disabled={busy}>{busy ? 'Logging in…' : 'Log in'}</button>
         </form>
       </section>
+      <AppFooter />
     </div>
   );
 }
@@ -2055,6 +2070,7 @@ function SetupScreen({ onDone }: { onDone: (user: AuthUser) => void }) {
           <button type="submit" disabled={busy}>{busy ? 'Creating…' : 'Create owner account'}</button>
         </form>
       </section>
+      <AppFooter />
     </div>
   );
 }
