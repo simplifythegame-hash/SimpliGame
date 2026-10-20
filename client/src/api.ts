@@ -332,6 +332,26 @@ export const api = {
     return data.reel as import('./types').ReelProject;
   },
 
+  async listImportedVideos() {
+    const data = await parseJson(await fetch('/api/imported-videos'));
+    return data.videos as import('./types').ImportedVideo[];
+  },
+
+  async createImportedVideo(body: { title: string; youtube: string; team_id?: string | null }) {
+    const data = await parseJson(
+      await fetch('/api/imported-videos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    );
+    return data.video as import('./types').ImportedVideo;
+  },
+
+  async deleteImportedVideo(id: string) {
+    await parseJson(await fetch(`/api/imported-videos/${id}`, { method: 'DELETE' }));
+  },
+
   async exportReel(reelId: string) {
     const data = await parseJson(await fetch(`/api/reels/${reelId}/export`, { method: 'POST' }));
     return data.export as { status: string; message: string };
