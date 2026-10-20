@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api';
-import type { AnalysisCandidate, AnalysisJob, AuthUser, Coach, EnrollInfo, FamilyContact, Game, GameAnalysis, GameEvent, ImportedVideo, LineupRow, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Team, Workspace } from './types';
+import type { AnalysisCandidate, AnalysisJob, AuthUser, Coach, EnrollInfo, FamilyContact, Game, GameAnalysis, GameEvent, LineupRow, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Team, Workspace } from './types';
 import YouTubePlayer from './components/YouTubePlayer';
 import VideoPlaceholder from './components/VideoPlaceholder';
 import Icon, { type IconName } from './components/Icon';
@@ -1574,7 +1574,6 @@ function HighlightBuilderScreen(props: {
         </p>
       </section>
       <AutoReelSection games={props.games} teams={props.teams} onOpen={props.onOpen} />
-      <ImportVideoSection teams={props.teams} role={props.role} />
       <AiQueuePickerSection games={props.games} teams={props.teams} role={props.role} onOpenReview={props.onOpenReview} />
       <EventsByPlayerSection
         games={props.games}
@@ -1642,152 +1641,6 @@ function AutoReelSection(props: {
         </button>
       </div>
       {error && <p className="error">{error}</p>}
-    </section>
-  );
-}
-
-/** Video Import (011): import a YouTube video BY LINK ONLY — footage
- *  that wasn't streamed in the app. No file upload, no storage: the
- *  server parses the link and stores only the video ID. Self-contained:
- *  fetches its own library list via the api. Imported clips are made
- *  from these videos in Reel Studio. */
-function ImportVideoSection(props: { teams: Team[]; role: ClientRole }) {
-  const [videos, setVideos] = useState<ImportedVideo[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [title, setTitle] = useState('');
-  const [youtube, setYoutube] = useState('');
-  const [teamId, setTeamId] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-
-  const load = useCallback(async () => {
-    const list = await api.listImportedVideos();
-    setVideos(list);
-  }, []);
-
-  useEffect(() => {
-    // Import uses the server's 'reels' permission (head_coach+) —
-    // lower roles never fetch (the section renders nothing for them).
-    if (!canRole(props.role, 'head_coach')) {
-      setLoading(false);
-      return;
-    }
-    load()
-      .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load imported videos'))
-      .finally(() => setLoading(false));
-  }, [load, props.role]);
-
-  if (!canRole(props.role, 'head_coach')) return null;
-
-  async function handleImport(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setError('');
-    try {
-      await api.createImportedVideo({
-        title: title.trim(),
-        youtube: youtube.trim(),
-        team_id: teamId || null,
-      });
-      setTitle('');
-      setYoutube('');
-      setTeamId('');
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to import video');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleDelete(video: ImportedVideo) {
-    if (
-      !window.confirm(
-        `Delete "${video.title}" from the imported video library? Clips already in reels will keep playing.`,
-      )
-    ) {
-      return;
-    }
-    setError('');
-    try {
-      await api.deleteImportedVideo(video.id);
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete imported video');
-    }
-  }
-
-  return (
-    <section>
-      <h2 className="btn-icon"><Icon name="video" size={22} />Import video</h2>
-      <p>
-        Use footage that wasn&apos;t streamed in the app — paste a YouTube link and it joins
-        the library for Reel Studio. Link only: nothing is uploaded or stored here.
-      </p>
-      <form onSubmit={handleImport}>
-        <div className="row">
-          <label className="field-label">
-            Title
-            <input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g. Scrimmage vs Tigers"
-              maxLength={200}
-              required
-              className="wide"
-            />
-          </label>
-          <label className="field-label">
-            YouTube link
-            <input
-              value={youtube}
-              onChange={(e) => setYoutube(e.target.value)}
-              placeholder="https://www.youtube.com/watch?v=…"
-              required
-              className="wide"
-            />
-          </label>
-          <label className="field-label">
-            Team (optional)
-            <select value={teamId} onChange={(e) => setTeamId(e.target.value)}>
-              <option value="">No team</option>
-              {props.teams.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button type="submit" disabled={busy || !title.trim() || !youtube.trim()}>
-            {busy ? 'Importing…' : 'Import'}
-          </button>
-        </div>
-      </form>
-      {error && <p className="error">{error}</p>}
-      {loading ? (
-        <p>Loading imported videos…</p>
-      ) : videos.length === 0 ? (
-        <p>No imported videos yet — import one to use footage that wasn&apos;t streamed in the app.</p>
-      ) : (
-        <ul className="list">
-          {videos.map((v) => {
-            const team = props.teams.find((t) => t.id === v.team_id);
-            return (
-              <li key={v.id}>
-                <strong>{v.title}</strong> · {team?.name ?? 'No team'}{' '}
-                <a
-                  href={`https://www.youtube.com/watch?v=${v.youtube_video_id}`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Watch on YouTube
-                </a>{' '}
-                <button onClick={() => void handleDelete(v)}>Delete</button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
     </section>
   );
 }
@@ -5115,34 +4968,6 @@ function ReelStudioScreen(props: { role: ClientRole; reelId: string; workspace: 
   const [exportMessage, setExportMessage] = useState('');
   const [addGameId, setAddGameId] = useState('');
 
-  // Add from imported video (011): the org's imported-video library,
-  // fetched on mount, plus the in/out points and player tag for the
-  // clip being built from the picked video.
-  const [importedVideos, setImportedVideos] = useState<ImportedVideo[]>([]);
-  const [importedLoadError, setImportedLoadError] = useState('');
-  const [importedVideoId, setImportedVideoId] = useState('');
-  const [importStart, setImportStart] = useState(0);
-  const [importEnd, setImportEnd] = useState(10);
-  const [importPlayerTag, setImportPlayerTag] = useState('');
-  const [importError, setImportError] = useState('');
-
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .listImportedVideos()
-      .then((list) => {
-        if (!cancelled) setImportedVideos(list);
-      })
-      .catch((e) => {
-        if (!cancelled) {
-          setImportedLoadError(e instanceof Error ? e.message : 'Failed to load imported videos');
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   // Preview: which clip is playing, and whether auto-advance is on.
   const [previewIndex, setPreviewIndex] = useState(0);
   const [previewPlaying, setPreviewPlaying] = useState(false);
@@ -5257,39 +5082,6 @@ function ReelStudioScreen(props: { role: ClientRole; reelId: string; workspace: 
       )
     : [];
 
-  // Imported video picked in "Add from imported video" below.
-  const selectedImported = importedVideos.find((v) => v.id === importedVideoId);
-
-  function addImportedClip() {
-    if (!selectedImported) return;
-    if (
-      !Number.isFinite(importStart) ||
-      !Number.isFinite(importEnd) ||
-      importStart < 0 ||
-      importEnd <= importStart
-    ) {
-      setImportError('End must be after Start, and Start must be 0 or later.');
-      return;
-    }
-    setImportError('');
-    const tag = importPlayerTag.trim();
-    setClips((prev) => [
-      ...prev,
-      {
-        eventId: null,
-        gameId: null,
-        importedVideoId: selectedImported.id,
-        videoId: selectedImported.youtube_video_id,
-        startSeconds: importStart,
-        endSeconds: importEnd,
-        transition: 'cut',
-        overlay: tag || selectedImported.title,
-        slowMo: false,
-        playerTag: tag || null,
-      },
-    ]);
-  }
-
   const previewClip = clips[previewIndex];
 
   return (
@@ -5403,14 +5195,6 @@ function ReelStudioScreen(props: { role: ClientRole; reelId: string; workspace: 
                 {clip.videoId ? 'video attached' : 'no video'} · {formatTimestamp(clip.startSeconds)} →{' '}
                 {formatTimestamp(clip.endSeconds)}
               </small>
-              {clip.importedVideoId && (
-                <small>
-                  {' '}
-                  · Source:{' '}
-                  {importedVideos.find((v) => v.id === clip.importedVideoId)?.title ?? 'Imported video'}
-                  {clip.playerTag ? ` · ${clip.playerTag}` : ''}
-                </small>
-              )}
               <div className="row">
                 <label className="field-label">
                   Start (s)
@@ -5533,69 +5317,6 @@ function ReelStudioScreen(props: { role: ClientRole; reelId: string; workspace: 
             );
           })}
         </ul>
-      )}
-
-      <h3>Add from imported video</h3>
-      {importedLoadError ? (
-        <p className="error">{importedLoadError}</p>
-      ) : importedVideos.length === 0 ? (
-        <p>No imported videos yet — import one from the Highlight Builder tab.</p>
-      ) : (
-        <>
-          <div className="row">
-            <select value={importedVideoId} onChange={(e) => setImportedVideoId(e.target.value)}>
-              <option value="">Pick an imported video…</option>
-              {importedVideos.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {v.title}
-                </option>
-              ))}
-            </select>
-          </div>
-          {selectedImported && (
-            <>
-              <YouTubePlayer
-                videoId={selectedImported.youtube_video_id}
-                isLive={false}
-                startSeconds={importStart}
-              />
-              <div className="row">
-                <label className="field-label">
-                  Start (s)
-                  <input
-                    type="number"
-                    min={0}
-                    step={1}
-                    value={importStart}
-                    onChange={(e) => setImportStart(Number(e.target.value))}
-                  />
-                </label>
-                <label className="field-label">
-                  End (s)
-                  <input
-                    type="number"
-                    min={0}
-                    step={1}
-                    value={importEnd}
-                    onChange={(e) => setImportEnd(Number(e.target.value))}
-                  />
-                </label>
-                <label className="field-label">
-                  Player tag (optional)
-                  <input
-                    value={importPlayerTag}
-                    onChange={(e) => setImportPlayerTag(e.target.value)}
-                    maxLength={200}
-                    placeholder="e.g. #9 — Kill"
-                    className="wide"
-                  />
-                </label>
-                <button onClick={addImportedClip}>Add clip to reel</button>
-              </div>
-              {importError && <p className="error">{importError}</p>}
-            </>
-          )}
-        </>
       )}
     </section>
   );
