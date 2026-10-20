@@ -735,3 +735,21 @@ input.wide {
     padding: 0;
   }
 }
+
+/* App footer: unobtrusive IP notice + privacy/terms links (Navy + Orange). */
+.app-footer {
+  text-align: center;
+  font-size: 12px;
+  color: #8a93a6;
+  padding: 18px 12px 22px;
+  border-top: 1px solid rgba(10, 31, 68, 0.08);
+}
+.app-footer a {
+  color: #0A1F44;
+  text-decoration: none;
+  margin: 0 4px;
+}
+.app-footer a:hover {
+  color: #FF6B1A;
+  text-decoration: underline;
+}
