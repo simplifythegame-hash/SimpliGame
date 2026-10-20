@@ -571,4 +571,124 @@ export const api = {
       }),
     );
   },
+
+  // ------------------------------------------- Google Drive import
+  // Per-user Drive: imported videos live in the coach's OWN Drive
+  // (drive.file scope). Connect is a full-page navigation to
+  // /api/auth/google/connect (the server 302s to Google and back to
+  // the app with a ?google= flag) — hence no api method for it.
+  async getGoogleStatus() {
+    const data = await parseJson(await fetch('/api/auth/google/status'));
+    return data as import('./types').GoogleStatus;
+  },
+
+  async disconnectGoogle() {
+    await parseJson(await fetch('/api/auth/google/disconnect', { method: 'POST' }));
+  },
+
+  /** Start an import: the server creates the library row and a Drive
+   *  resumable upload session, and returns the session URL the browser
+   *  uploads to directly (file bytes never pass through the server). */
+  async initImportedUpload(body: { title: string; team_id?: string | null; mime_type: string; size_bytes: number }) {
+    const data = await parseJson(
+      await fetch('/api/imported-videos/init', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    );
+    return data as { videoId: string; uploadUrl: string };
+  },
+
+  async completeImportedUpload(videoId: string, driveFileId: string | null) {
+    const data = await parseJson(
+      await fetch(`/api/imported-videos/${videoId}/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ drive_file_id: driveFileId }),
+      }),
+    );
+    return data.video as import('./types').ImportedVideo;
+  },
+
+  async listImportedVideos() {
+    const data = await parseJson(await fetch('/api/imported-videos'));
+    return data.videos as import('./types').ImportedVideo[];
+  },
+
+  async deleteImportedVideo(videoId: string) {
+    await parseJson(await fetch(`/api/imported-videos/${videoId}`, { method: 'DELETE' }));
+  },
+
+  /** Short-lived Drive media URL (~1h) for HTML5 playback/seeking. */
+  async getImportedMediaUrl(videoId: string) {
+    const data = await parseJson(await fetch(`/api/imported-videos/${videoId}/media-url`));
+    return data as { url: string; expiresInSeconds: number };
+  },
 };
+
+/**
+ * Upload a file to a Drive resumable session URL, in chunks, with
+ * progress. The session URL is the capability (no auth header). Chunk
+ * size must be a multiple of 256 KB per Drive's resumable protocol;
+ * only the final chunk may be smaller. Resolves with the Drive file id
+ * from the final response (or null when Google returns no body).
+ * Rejects with a readable Error on any non-resume response.
+ */
+export function uploadFileToDriveSession(
+  uploadUrl: string,
+  file: File,
+  onProgress: (fraction: number) => void,
+): Promise<{ driveFileId: string | null }> {
+  const CHUNK_SIZE = 8 * 1024 * 1024; // 8 MiB — a multiple of 256 KB.
+  const total = file.size;
+
+  function putChunk(start: number): Promise<{ driveFileId: string | null }> {
+    if (start >= total) {
+      return Promise.reject(new Error('Upload finished without a final response from Google.'));
+    }
+    const end = Math.min(start + CHUNK_SIZE, total);
+    const chunk = file.slice(start, end);
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', uploadUrl);
+      xhr.setRequestHeader('Content-Range', `bytes ${start}-${end - 1}/${total}`);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          onProgress(Math.min(1, (start + e.loaded) / total));
+        }
+      };
+      xhr.onerror = () => reject(new Error('Network error during upload — check your connection and retry.'));
+      xhr.onabort = () => reject(new Error('Upload cancelled.'));
+      xhr.onload = () => {
+        if (xhr.status === 200 || xhr.status === 201) {
+          let driveFileId: string | null = null;
+          try {
+            const parsed = JSON.parse(xhr.responseText) as { id?: string };
+            driveFileId = typeof parsed.id === 'string' ? parsed.id : null;
+          } catch {
+            // No JSON body — /complete falls back to finding the file
+            // by name in the SimpliGame folder.
+          }
+          onProgress(1);
+          resolve({ driveFileId });
+          return;
+        }
+        if (xhr.status === 308) {
+          // Resume Incomplete: continue from where Google says it
+          // stopped (Range header), or from the end of this chunk.
+          const range = xhr.getResponseHeader('Range');
+          const match = range ? range.match(/bytes=0-(\d+)/) : null;
+          const next = match ? Number(match[1]) + 1 : end;
+          onProgress(Math.min(1, next / total));
+          resolve(putChunk(next));
+          return;
+        }
+        reject(new Error(`Google upload failed (HTTP ${xhr.status}).`));
+      };
+      xhr.send(chunk);
+    });
+  }
+
+  return putChunk(0);
+}
