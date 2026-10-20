@@ -77,9 +77,11 @@ a {
 }
 
 .org-header {
+  position: relative;
   background: linear-gradient(100deg, var(--brand, #0A1F44), var(--brand2, #1B3560));
   color: #fff;
-  padding: 1.25rem 1.5rem;
+  /* Extra right padding keeps header text clear of the settings menu. */
+  padding: 1.25rem 4.25rem 1.25rem 1.5rem;
   border-radius: 16px;
   box-shadow: var(--shadow);
   margin-bottom: 1.25rem;
@@ -135,6 +137,66 @@ a {
 
 .org-header input {
   background: rgba(255, 255, 255, 0.95);
+}
+
+/* ---- Settings menu (header, upper right) ---- */
+
+.settings-menu {
+  position: absolute;
+  top: 1.25rem;
+  right: 1.5rem;
+  z-index: 30;
+}
+
+.settings-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: var(--radius-sm);
+  color: #fff;
+}
+
+.settings-toggle:hover {
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.settings-panel {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  min-width: 220px;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 0.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.settings-panel button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  border-radius: 999px;
+  padding: 0.55rem 0.9rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.settings-panel button:hover {
+  background: rgba(255, 107, 26, 0.1);
 }
 
 /* ---- Sections are cards; nested sections stay flat ---- */
@@ -692,7 +754,12 @@ input.wide {
   }
 
   .org-header {
-    padding: 1rem;
+    padding: 1rem 3.75rem 1rem 1rem;
+  }
+
+  .settings-menu {
+    top: 1rem;
+    right: 1rem;
   }
 
   .org-header h1 {
