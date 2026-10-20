@@ -67,6 +67,32 @@ a {
 
 /* ---- HOME: org identity block + your teams ---- */
 
+.home-identity-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+/* HOME Go Live shortcut: the orange action color, prominent in the
+   identity block's upper right. */
+.go-live-btn {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  font-size: 1.05rem;
+  padding: 0.65rem 1.25rem;
+  border-radius: 999px;
+  box-shadow: 0 2px 8px rgba(255, 107, 26, 0.4);
+  flex: 0 0 auto;
+}
+
+.go-live-btn:hover:not(:disabled) {
+  background: var(--accent-dark);
+  border-color: var(--accent-dark);
+}
+
 .home-identity-main {
   display: flex;
   align-items: center;
