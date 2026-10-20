@@ -47,6 +47,8 @@ export type IconName =
   | 'trash'
   | 'back'
   | 'send'
+  | 'menu'
+  | 'logout'
   // AI Vision
   | 'ai';
 
@@ -248,6 +250,20 @@ const PATHS: Record<IconName, React.ReactNode> = {
     <>
       <path d="M22 2L11 13" />
       <path d="M22 2l-7 20-4-9-9-4 20-7z" />
+    </>
+  ),
+  menu: (
+    <>
+      <path d="M3 6h18" />
+      <path d="M3 12h18" />
+      <path d="M3 18h18" />
+    </>
+  ),
+  logout: (
+    <>
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+      <path d="M16 17l5-5-5-5" />
+      <path d="M21 12H9" />
     </>
   ),
   // AI Vision: a scan frame + eye — the worker watches the video,
