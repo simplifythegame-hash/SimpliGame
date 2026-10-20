@@ -131,9 +131,11 @@ npm run dev --workspace=@simpligame/client   # http://localhost:5173
   roster management + that team's games), **Player Management**
   (head_coach+; every player across teams, opening the full recruiting
   profile), **Highlight Builder** (head_coach+; Auto Reel automated
-  builds + reel library + Reel Studio), **Coaches** (owner only).
-  Game Detail stays reachable from Live or Team; the sidebar collapses
-  to a horizontal tab row on phones.
+  builds + reel library + Reel Studio). Game Detail stays reachable
+  from Live or Team; the sidebar collapses to a horizontal tab row on
+  phones. Account controls live in the header's ☰ settings menu (upper
+  right): **Account** (edit your own name/email, change your password),
+  **Coaches** (owner only), **Logout**.
 
 ## Coach logins
 
@@ -144,8 +146,10 @@ No env vars needed. First run migration 009, then restart.
    Setup refuses once the first user exists, so it can never be re-run
    to hijack the org. The owner sets their own password via this form —
    never in chat, never hardcoded.
-2. Log in with that account. The header shows the signed-in user + Logout.
-3. Owner-only **Coaches** section (nav): add a coach with a role
+2. Log in with that account. The header shows the signed-in user; the
+   ☰ menu in its upper right holds Account, Coaches (owner only), and
+   Logout.
+3. Owner-only **Coaches** section (header ☰ menu): add a coach with a role
    (head coach / assistant / stat crew) + team checkboxes, change a
    coach's role/teams, remove a coach. Removing a coach deletes their
    sessions too.
@@ -178,8 +182,10 @@ No env vars needed. First run migration 009, then restart.
    not the separate highlights-notify button, which is head_coach+.
    The owner is the only role that can manage coaches or rename the org.
 5. **Passwords:** any logged-in user can change their own password from
-   the header ("Change password" — verifies the current password and
-   signs out their other sessions). The owner can reset a coach's
+   the **Account** screen (header ☰ menu → Account — verifies the
+   current password and signs out their other sessions; the same screen
+   edits their own name/email via `PATCH /api/auth/me`, email must stay
+   unique in the org). The owner can reset a coach's
    password from the Coaches screen ("Reset password") — this signs the
    coach out everywhere; share the new password with them out-of-band.
    There is no email-based reset. A fully locked-out owner (no working
