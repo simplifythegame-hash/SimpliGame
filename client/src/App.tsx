@@ -657,13 +657,14 @@ function GameListItem(props: {
 }
 
 /** HOME (prototype "Overview"): org identity block on top, "Your
- *  teams" directly under it, then Live now / Upcoming / Recent
- *  results, and a slim quick-links strip at the bottom. Presentation
- *  only — every number comes from the loaded workspace. For
- *  team-scoped accounts the workspace already contains only their
- *  assigned teams (the server filters by assignment), so "Your
- *  teams" is exactly the teams they are signed up for; owners see
- *  all of the org's teams. */
+ *  teams" directly under it, then Live now, then Upcoming games and
+ *  Recent results as collapsed-by-default dropdowns (header shows the
+ *  count; tap to expand), and a slim quick-links strip at the
+ *  bottom. Presentation only — every number comes from the loaded
+ *  workspace. For team-scoped accounts the workspace already
+ *  contains only their assigned teams (the server filters by
+ *  assignment), so "Your teams" is exactly the teams they are signed
+ *  up for; owners see all of the org's teams. */
 function HomeOverviewScreen(props: {
   workspace: Workspace;
   role: ClientRole;
@@ -674,6 +675,10 @@ function HomeOverviewScreen(props: {
 }) {
   const { workspace } = props;
   const org = workspace.organization;
+  // Upcoming / Recent start collapsed (cleaner HOME); each header
+  // still shows its count so the info stays scannable.
+  const [upcomingOpen, setUpcomingOpen] = useState(false);
+  const [recentOpen, setRecentOpen] = useState(false);
   const teamName = (teamId: string) => workspace.teams.find((t) => t.id === teamId)?.name ?? 'Team';
   const liveGames = workspace.games.filter((g) => g.status === 'live');
   const upcomingGames = workspace.games.filter((g) => g.status === 'draft');
@@ -711,11 +716,6 @@ function HomeOverviewScreen(props: {
             )}
             <div className="home-identity-text">
               <h2 className="home-org-name">{org.name}</h2>
-              <div className="home-swatches">
-                <span className="swatch" style={{ background: org.primary_color }} title={`Primary ${org.primary_color}`} />
-                <span className="swatch" style={{ background: org.secondary_color }} title={`Secondary ${org.secondary_color}`} />
-                <span className="sub-hint">Brand colors</span>
-              </div>
             </div>
           </div>
           {/* Go Live shortcut: straight into the Live tab's wizard
@@ -794,41 +794,61 @@ function HomeOverviewScreen(props: {
       )}
 
       <section>
-        <h2>Upcoming games</h2>
-        {upcomingGames.length === 0 ? (
-          <p>No upcoming games — create one on the Live tab.</p>
-        ) : (
-          <ul className="list">
-            {upcomingGames.map((g) => (
-              <GameListItem
-                key={g.id}
-                game={g}
-                teamName={teamName(g.team_id)}
-                onLive={() => props.onOpenLiveGame(g.id, 'live')}
-                onDetail={() => props.onOpenGame(g.id, 'live')}
-              />
-            ))}
-          </ul>
-        )}
+        <button
+          type="button"
+          className="section-toggle"
+          aria-expanded={upcomingOpen}
+          onClick={() => setUpcomingOpen((o) => !o)}
+        >
+          <span className="section-toggle-title">Upcoming games</span>
+          <span className="section-toggle-count">{upcomingGames.length}</span>
+          <Icon name="chevron" className={upcomingOpen ? 'open' : undefined} />
+        </button>
+        {upcomingOpen &&
+          (upcomingGames.length === 0 ? (
+            <p>No upcoming games — create one on the Live tab.</p>
+          ) : (
+            <ul className="list">
+              {upcomingGames.map((g) => (
+                <GameListItem
+                  key={g.id}
+                  game={g}
+                  teamName={teamName(g.team_id)}
+                  onLive={() => props.onOpenLiveGame(g.id, 'live')}
+                  onDetail={() => props.onOpenGame(g.id, 'live')}
+                />
+              ))}
+            </ul>
+          ))}
       </section>
 
       <section>
-        <h2>Recent results</h2>
-        {recentFinals.length === 0 ? (
-          <p>No finished games yet.</p>
-        ) : (
-          <ul className="list">
-            {recentFinals.map((g) => (
-              <GameListItem
-                key={g.id}
-                game={g}
-                teamName={teamName(g.team_id)}
-                onLive={() => props.onOpenLiveGame(g.id, 'live')}
-                onDetail={() => props.onOpenGame(g.id, 'live')}
-              />
-            ))}
-          </ul>
-        )}
+        <button
+          type="button"
+          className="section-toggle"
+          aria-expanded={recentOpen}
+          onClick={() => setRecentOpen((o) => !o)}
+        >
+          <span className="section-toggle-title">Recent results</span>
+          <span className="section-toggle-count">{recentFinals.length}</span>
+          <Icon name="chevron" className={recentOpen ? 'open' : undefined} />
+        </button>
+        {recentOpen &&
+          (recentFinals.length === 0 ? (
+            <p>No finished games yet.</p>
+          ) : (
+            <ul className="list">
+              {recentFinals.map((g) => (
+                <GameListItem
+                  key={g.id}
+                  game={g}
+                  teamName={teamName(g.team_id)}
+                  onLive={() => props.onOpenLiveGame(g.id, 'live')}
+                  onDetail={() => props.onOpenGame(g.id, 'live')}
+                />
+              ))}
+            </ul>
+          ))}
       </section>
 
       {/* 4. Quick links */}
