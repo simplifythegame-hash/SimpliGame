@@ -220,6 +220,39 @@ Setup (Google Cloud, signed in with the app's Google account):
 4. Never paste the private key in chat. If a key is ever exposed,
    delete it in Google Cloud and make a new one.
 
+## Google Drive video import (per-user)
+
+Coaches can import game film that wasn't streamed in the app
+(Highlight Builder → **Import video**) and cut clips from it in Reel
+Studio. Imported videos live in **each coach's OWN Google Drive** —
+tied to them, not the app owner — under a "SimpliGame" folder, with
+the `drive.file` scope only (the app can create and touch only its own
+files in a coach's Drive). Uploads go browser → Google directly via a
+server-initiated resumable session; video bytes never pass through
+Render. Playback uses short-lived media URLs minted per view with the
+video owner's Drive access, so the org's coaches can play imports
+through the app. The per-user refresh token lives on the user row
+(`users.google_refresh_token`) and is never exposed by any API.
+
+**Owner setup (one time):**
+1. Google Cloud Console (the SimpliGame project, signed in with the
+   app's Google account):
+   - APIs & Services → Library → enable the **Google Drive API**
+     (the Sheets setup may have enabled it already).
+   - APIs & Services → Credentials → the OAuth client used by
+     `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` →
+     **Authorized redirect URIs** → add:
+     `https://simpligame.onrender.com/api/auth/google/callback`
+   - The OAuth consent screen needs the `drive.file` scope; while the
+     app is in Testing mode, each coach's Google account must be added
+     as a test user (same rule as the Sheets export token).
+2. Neon SQL Editor: run `migrations/011_drive_import.sql`.
+3. Render: no new env vars (the OAuth client id/secret are the same
+   ones Sheets uses; `PUBLIC_URL` sets the redirect base) → restart
+   the service.
+4. In the app: Account → **Connect Google Drive**, then Highlight
+   Builder → **Import video** for the first upload.
+
 ## Family SMS (Twilio)
 
 Family text alerts send through Twilio when configured, and run in
