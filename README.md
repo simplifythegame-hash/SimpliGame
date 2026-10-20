@@ -135,7 +135,9 @@ npm run dev --workspace=@simpligame/client   # http://localhost:5173
   from Live or Team; the sidebar collapses to a horizontal tab row on
   phones. Account controls live in the header's ☰ settings menu (upper
   right): **Account** (edit your own name/email, change your password),
-  **Coaches** (owner only), **Logout**.
+  **Phone Numbers** (head_coach+; every player's family enrollment
+  links + masked enrolled contacts in one hub), **Coaches** (owner
+  only), **Logout**.
 
 ## Coach logins
 
@@ -147,8 +149,8 @@ No env vars needed. First run migration 009, then restart.
    to hijack the org. The owner sets their own password via this form —
    never in chat, never hardcoded.
 2. Log in with that account. The header shows the signed-in user; the
-   ☰ menu in its upper right holds Account, Coaches (owner only), and
-   Logout.
+   ☰ menu in its upper right holds Account, Phone Numbers (head_coach+),
+   Coaches (owner only), and Logout.
 3. Owner-only **Coaches** section (header ☰ menu): add a coach with a role
    (head coach / assistant / stat crew) + team checkboxes, change a
    coach's role/teams, remove a coach. Removing a coach deletes their
