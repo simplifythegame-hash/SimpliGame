@@ -700,22 +700,35 @@ function HomeOverviewScreen(props: {
     <>
       {/* 1. Org identity block */}
       <section className="home-identity">
-        <div className="home-identity-main">
-          {org.logo_url ? (
-            <img className="home-identity-logo" src={org.logo_url} alt="" />
-          ) : (
-            <div className="home-identity-logo home-initials" style={brandTileStyle} aria-hidden="true">
-              {initials(org.name)}
-            </div>
-          )}
-          <div className="home-identity-text">
-            <h2 className="home-org-name">{org.name}</h2>
-            <div className="home-swatches">
-              <span className="swatch" style={{ background: org.primary_color }} title={`Primary ${org.primary_color}`} />
-              <span className="swatch" style={{ background: org.secondary_color }} title={`Secondary ${org.secondary_color}`} />
-              <span className="sub-hint">Brand colors</span>
+        <div className="home-identity-top">
+          <div className="home-identity-main">
+            {org.logo_url ? (
+              <img className="home-identity-logo" src={org.logo_url} alt="" />
+            ) : (
+              <div className="home-identity-logo home-initials" style={brandTileStyle} aria-hidden="true">
+                {initials(org.name)}
+              </div>
+            )}
+            <div className="home-identity-text">
+              <h2 className="home-org-name">{org.name}</h2>
+              <div className="home-swatches">
+                <span className="swatch" style={{ background: org.primary_color }} title={`Primary ${org.primary_color}`} />
+                <span className="swatch" style={{ background: org.secondary_color }} title={`Secondary ${org.secondary_color}`} />
+                <span className="sub-hint">Brand colors</span>
+              </div>
             </div>
           </div>
+          {/* Go Live shortcut: straight into the Live tab's wizard
+              (Page 1). Same flow, no separate path — head_coach+,
+              the roles that can run the wizard. */}
+          {canRole(props.role, 'head_coach') && (
+            <button
+              className="go-live-btn btn-icon"
+              onClick={() => props.onGoTab({ kind: 'live' })}
+            >
+              <Icon name="goLive" />Go Live
+            </button>
+          )}
         </div>
         <div className="stat-chips">
           <span className="stat-chip">
