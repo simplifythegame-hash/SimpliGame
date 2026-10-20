@@ -32,6 +32,19 @@ import {
   type StoredSectionReview,
 } from './analysis';
 import { exportGameToSheets, isSheetsConfigured, type SheetRows } from './sheets';
+import {
+  DRIVE_FILE_SCOPE,
+  deleteDriveFile,
+  exchangeCodeForTokens,
+  findDriveFileInFolder,
+  findOrCreateSimpliGameFolder,
+  getDriveFile,
+  getGoogleUserEmail,
+  googleRedirectUri,
+  initiateResumableUpload,
+  isDriveConfigured,
+  refreshDriveAccessToken,
+} from './drive';
 import { sendSms } from './sms';
 import { extractYouTubeVideoId } from './youtube';
 
@@ -371,6 +384,194 @@ app.post(
     } catch (err) {
       if (isMissingTable(err)) {
         res.status(503).json({ ok: false, error: AUTH_MIGRATION_MESSAGE });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+// ------------------------------------------- per-user Google Drive
+// Video import storage: each coach connects THEIR OWN Google Drive
+// (drive.file scope only — see drive.ts). The refresh token lives on
+// the user row (migration 011); it is never returned by any response
+// and never logged.
+//
+// These routes live under /api/auth/, which the session gate exempts —
+// so each handler checks req.auth itself. /connect and /callback are
+// browser navigations and answer with redirects back into the app
+// (the SPA reads the ?google= flag and lands on the Account screen).
+const DRIVE_MIGRATION_MESSAGE =
+  'Google Drive import is not set up yet — run migrations/011_drive_import.sql in the Neon SQL Editor, then restart.';
+
+/** Missing table (42P01) or missing column (42703) — migration 011 not run. */
+function isMissingDriveSchema(err: unknown): boolean {
+  const code = (err as { code?: string }).code;
+  return code === '42P01' || code === '42703';
+}
+
+// OAuth `state`: HMAC-signed { uid, exp } so the callback can trust it
+// without a server-side store. The client secret is the signing key
+// (server-side only). The callback ALSO requires a live session for
+// the same user — state alone never authorizes anything.
+function signGoogleState(userId: string): string {
+  const payload = Buffer.from(
+    JSON.stringify({ uid: userId, exp: Date.now() + 10 * 60 * 1000 }),
+  ).toString('base64url');
+  const secret = process.env.GOOGLE_OAUTH_CLIENT_SECRET ?? '';
+  const sig = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
+  return `${payload}.${sig}`;
+}
+
+function verifyGoogleState(state: string): string | null {
+  const parts = state.split('.');
+  if (parts.length !== 2) return null;
+  const [payload, sig] = parts;
+  const secret = process.env.GOOGLE_OAUTH_CLIENT_SECRET ?? '';
+  const expected = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as {
+      uid?: string;
+      exp?: number;
+    };
+    if (typeof parsed.uid !== 'string' || !parsed.uid) return null;
+    if (typeof parsed.exp !== 'number' || parsed.exp < Date.now()) return null;
+    return parsed.uid;
+  } catch {
+    return null;
+  }
+}
+
+app.get('/api/auth/google/connect', (req, res) => {
+  if (!req.auth) {
+    res.redirect('/?google=login-required');
+    return;
+  }
+  if (!isDriveConfigured()) {
+    res.redirect('/?google=not-configured');
+    return;
+  }
+  const params = new URLSearchParams({
+    client_id: process.env.GOOGLE_OAUTH_CLIENT_ID ?? '',
+    redirect_uri: googleRedirectUri(),
+    response_type: 'code',
+    // drive.file: the app can only see/touch files it created in the
+    // coach's Drive. `email` is the basic identity scope so the
+    // Account screen can show "Connected as …".
+    scope: `${DRIVE_FILE_SCOPE} email`,
+    access_type: 'offline',
+    prompt: 'consent',
+    include_granted_scopes: 'true',
+    state: signGoogleState(req.auth.user.id),
+  });
+  res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
+});
+
+app.get(
+  '/api/auth/google/callback',
+  asyncHandler(async (req, res) => {
+    const fail = (flag: string) => res.redirect(`/?google=${flag}`);
+    const code = typeof req.query.code === 'string' ? req.query.code : '';
+    const state = typeof req.query.state === 'string' ? req.query.state : '';
+    if (typeof req.query.error === 'string' || !code) {
+      fail('denied');
+      return;
+    }
+    const stateUserId = state ? verifyGoogleState(state) : null;
+    if (!stateUserId) {
+      fail('failed');
+      return;
+    }
+    // The consent must come back to the same signed-in user who started
+    // it — a session for a different (or no) user never stores a token.
+    if (!req.auth || req.auth.user.id !== stateUserId) {
+      fail('session');
+      return;
+    }
+    if (!isDriveConfigured()) {
+      fail('not-configured');
+      return;
+    }
+    const tokens = await exchangeCodeForTokens(code);
+    if (!tokens) {
+      fail('failed');
+      return;
+    }
+    if (!tokens.refreshToken) {
+      // prompt=consent makes Google return a refresh token; without one
+      // there is nothing durable to store.
+      fail('failed');
+      return;
+    }
+    const email = await getGoogleUserEmail(tokens.accessToken);
+    const db = getPool();
+    try {
+      await db.query('UPDATE users SET google_refresh_token = $1, google_email = $2 WHERE id = $3', [
+        tokens.refreshToken,
+        email,
+        stateUserId,
+      ]);
+    } catch (err) {
+      if (isMissingDriveSchema(err)) {
+        fail('setup');
+        return;
+      }
+      throw err;
+    }
+    res.redirect('/?google=connected');
+  }),
+);
+
+app.get(
+  '/api/auth/google/status',
+  asyncHandler(async (req, res) => {
+    if (!req.auth) {
+      res.status(401).json({ ok: false, error: 'Please log in.' });
+      return;
+    }
+    const db = getPool();
+    try {
+      const row = await db.query(
+        'SELECT google_email, google_refresh_token IS NOT NULL AS connected FROM users WHERE id = $1',
+        [req.auth.user.id],
+      );
+      const user = row.rows[0];
+      res.json({
+        ok: true,
+        connected: Boolean(user?.connected),
+        email: (user?.google_email as string | null) ?? null,
+      });
+    } catch (err) {
+      if (isMissingDriveSchema(err)) {
+        // Migration 011 not run yet — report "not connected" plus the
+        // setup flag instead of an error, so the UI can say why.
+        res.json({ ok: true, connected: false, email: null, setupRequired: true });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+app.post(
+  '/api/auth/google/disconnect',
+  asyncHandler(async (req, res) => {
+    if (!req.auth) {
+      res.status(401).json({ ok: false, error: 'Please log in.' });
+      return;
+    }
+    const db = getPool();
+    try {
+      await db.query('UPDATE users SET google_refresh_token = NULL, google_email = NULL WHERE id = $1', [
+        req.auth.user.id,
+      ]);
+      res.json({ ok: true, connected: false });
+    } catch (err) {
+      if (isMissingDriveSchema(err)) {
+        res.status(503).json({ ok: false, error: DRIVE_MIGRATION_MESSAGE });
         return;
       }
       throw err;
@@ -1778,10 +1979,30 @@ function cleanReelClip(value: unknown): Record<string, unknown> | null {
   if (c.transition !== 'cut' && c.transition !== 'fade') return null;
   if (typeof c.overlay !== 'string' || c.overlay.length > REEL_OVERLAY_MAX) return null;
   if (typeof c.slowMo !== 'boolean') return null;
+  // Imported-video source (migration 011): a clip draws from exactly
+  // one source — a YouTube video (videoId, set for game highlights) or
+  // an imported Drive video (importedVideoId). playerTag is a label
+  // only (used for overlays on imported clips) — never a stat.
+  if (
+    c.importedVideoId !== undefined &&
+    c.importedVideoId !== null &&
+    typeof c.importedVideoId !== 'string'
+  ) {
+    return null;
+  }
+  if (
+    c.playerTag !== undefined &&
+    c.playerTag !== null &&
+    (typeof c.playerTag !== 'string' || c.playerTag.length > 100)
+  ) {
+    return null;
+  }
   return {
     eventId: typeof c.eventId === 'string' ? c.eventId : null,
     gameId: typeof c.gameId === 'string' ? c.gameId : null,
     videoId: typeof c.videoId === 'string' ? c.videoId : null,
+    importedVideoId: typeof c.importedVideoId === 'string' ? c.importedVideoId : null,
+    playerTag: typeof c.playerTag === 'string' ? c.playerTag : null,
     startSeconds: start,
     endSeconds: end,
     transition: c.transition,
@@ -2507,6 +2728,344 @@ app.get(
       teamIds ? [auth.user.org_id, teamIds] : [auth.user.org_id],
     );
     res.json({ ok: true, exports: rows.rows });
+  }),
+);
+
+// ------------------------------------------- Google Drive video import
+// Imported videos live in each coach's OWN Google Drive (drive.file
+// scope — see drive.ts and migration 011). Upload flow: the server
+// initiates a Drive resumable session with the uploader's access
+// token, the browser PUTs the file straight to Google in chunks, then
+// /complete verifies the file and marks the row ready. Playback uses
+// short-lived media URLs minted with the VIDEO OWNER's access token
+// (see the media-url handler) — any coach who can see the video in
+// the library can play it, which is the point of the app record.
+//
+// If migration 011 has not run yet, every endpoint fails with the
+// explicit run-the-migration message instead of a generic 500.
+
+/** The library's public shape — never a token, never the raw
+ *  drive_file_id (playback goes through the media-url endpoint). */
+function publicImportedVideo(row: Record<string, unknown>, callerId: string) {
+  return {
+    id: row.id as string,
+    title: row.title as string,
+    team_id: (row.team_id as string | null) ?? null,
+    mime_type: (row.mime_type as string) ?? '',
+    size_bytes: Number(row.size_bytes ?? 0),
+    ready: row.ready === true,
+    owner_user_id: row.owner_user_id as string,
+    mine: row.owner_user_id === callerId,
+    created_at: row.created_at as string,
+  };
+}
+
+/** Load a user's stored Drive refresh token. Returns null when the
+ *  user never connected (or disconnected) Google Drive. */
+async function loadDriveRefreshToken(
+  db: ReturnType<typeof getPool>,
+  userId: string,
+): Promise<string | null> {
+  const row = await db.query('SELECT google_refresh_token FROM users WHERE id = $1', [userId]);
+  const token = row.rows[0]?.google_refresh_token as string | null | undefined;
+  return typeof token === 'string' && token ? token : null;
+}
+
+/** A fresh Drive access token for a user, or null when they are not
+ *  connected or Google refuses the grant. */
+async function freshDriveAccessToken(
+  db: ReturnType<typeof getPool>,
+  userId: string,
+): Promise<string | null> {
+  const refreshToken = await loadDriveRefreshToken(db, userId);
+  if (!refreshToken) return null;
+  return refreshDriveAccessToken(refreshToken);
+}
+
+/** Visibility rule shared by the list and media-url: ready videos are
+ *  visible to their owner, the org owner, and coaches assigned to the
+ *  video's team; incomplete (not-ready) videos only to their owner. */
+function canSeeImportedVideo(
+  row: { ready: unknown; owner_user_id: unknown; team_id: unknown },
+  auth: ReturnType<typeof authOf>,
+): boolean {
+  if (row.owner_user_id === auth.user.id) return true;
+  if (row.ready !== true) return false;
+  if (auth.teamIds === null) return true; // org owner
+  return typeof row.team_id === 'string' && auth.teamIds.includes(row.team_id);
+}
+
+app.post(
+  '/api/imported-videos/init',
+  requirePermission('reels'),
+  asyncHandler(async (req, res) => {
+    const auth = authOf(req);
+    const { title, team_id, mime_type, size_bytes } = req.body ?? {};
+    if (typeof title !== 'string' || !title.trim() || title.trim().length > 150) {
+      res.status(400).json({ ok: false, error: 'A title of 150 characters or fewer is required.' });
+      return;
+    }
+    if (typeof mime_type !== 'string' || !/^video\//.test(mime_type)) {
+      res.status(400).json({ ok: false, error: 'Only video files can be imported.' });
+      return;
+    }
+    const size = Number(size_bytes);
+    if (!Number.isInteger(size) || size <= 0 || size > 10 * 1024 * 1024 * 1024) {
+      res.status(400).json({ ok: false, error: 'File size must be between 1 byte and 10 GB.' });
+      return;
+    }
+    if (!isDriveConfigured()) {
+      res.status(503).json({
+        ok: false,
+        error: 'Google Drive is not configured on the server (GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET).',
+      });
+      return;
+    }
+    const db = getPool();
+    try {
+      const org = await getOrCreateOrganization(auth.user.org_id);
+      let teamId: string | null = null;
+      if (typeof team_id === 'string' && team_id) {
+        const team = await db.query('SELECT id FROM teams WHERE id = $1 AND org_id = $2', [
+          team_id,
+          org.id,
+        ]);
+        if (team.rows.length === 0 || !canAccessTeam(auth, team_id)) {
+          res.status(404).json({ ok: false, error: 'Team not found.' });
+          return;
+        }
+        teamId = team_id;
+      }
+      const accessToken = await freshDriveAccessToken(db, auth.user.id);
+      if (!accessToken) {
+        res.status(400).json({
+          ok: false,
+          error: 'Connect Google Drive first (Account screen → Google Drive), then try again.',
+        });
+        return;
+      }
+      const folder = await findOrCreateSimpliGameFolder(accessToken);
+      if (!folder.ok) {
+        res.status(502).json({ ok: false, error: folder.error });
+        return;
+      }
+      const inserted = await db.query(
+        `INSERT INTO imported_videos (org_id, owner_user_id, title, team_id, mime_type, size_bytes)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+        [org.id, auth.user.id, title.trim(), teamId, mime_type, size],
+      );
+      const row = inserted.rows[0];
+      const session = await initiateResumableUpload(accessToken, {
+        folderId: folder.folderId,
+        name: title.trim(),
+        mimeType: mime_type,
+        sizeBytes: size,
+      });
+      if (!session.ok) {
+        // No session → nothing can ever upload against this row.
+        await db.query('DELETE FROM imported_videos WHERE id = $1', [row.id]).catch(() => {});
+        res.status(502).json({ ok: false, error: session.error });
+        return;
+      }
+      res.status(201).json({ ok: true, videoId: row.id as string, uploadUrl: session.uploadUrl });
+    } catch (err) {
+      if (isMissingDriveSchema(err)) {
+        res.status(503).json({ ok: false, error: DRIVE_MIGRATION_MESSAGE });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+app.post(
+  '/api/imported-videos/:id/complete',
+  requirePermission('reels'),
+  asyncHandler(async (req, res) => {
+    const auth = authOf(req);
+    const db = getPool();
+    try {
+      const org = await getOrCreateOrganization(auth.user.org_id);
+      const found = await db.query('SELECT * FROM imported_videos WHERE id = $1 AND org_id = $2', [
+        String(req.params.id),
+        org.id,
+      ]);
+      const row = found.rows[0];
+      // Only the uploader completes their own upload.
+      if (!row || row.owner_user_id !== auth.user.id) {
+        res.status(404).json({ ok: false, error: 'Imported video not found.' });
+        return;
+      }
+      if (row.ready === true) {
+        res.json({ ok: true, video: publicImportedVideo(row, auth.user.id) });
+        return;
+      }
+      const accessToken = await freshDriveAccessToken(db, auth.user.id);
+      if (!accessToken) {
+        res.status(400).json({
+          ok: false,
+          error: 'Your Google Drive connection needs to be reconnected (Account screen → Google Drive).',
+        });
+        return;
+      }
+      // The browser reports the file id from Drive's final upload
+      // response; verify it server-side before trusting it. Fallback:
+      // find the file by title inside the SimpliGame folder.
+      const reportedId =
+        typeof req.body?.drive_file_id === 'string' && req.body.drive_file_id
+          ? (req.body.drive_file_id as string)
+          : typeof row.drive_file_id === 'string'
+            ? (row.drive_file_id as string)
+            : null;
+      let info = reportedId ? await getDriveFile(accessToken, reportedId) : null;
+      if (!info || info.trashed) {
+        const folder = await findOrCreateSimpliGameFolder(accessToken);
+        info = folder.ok ? await findDriveFileInFolder(accessToken, folder.folderId, row.title as string) : null;
+      }
+      if (!info || info.trashed) {
+        res.status(400).json({
+          ok: false,
+          error: 'The upload was not found in Drive yet — let the upload finish, then try again.',
+        });
+        return;
+      }
+      const updated = await db.query(
+        'UPDATE imported_videos SET drive_file_id = $1, size_bytes = $2, ready = true WHERE id = $3 RETURNING *',
+        [info.id, info.sizeBytes > 0 ? info.sizeBytes : row.size_bytes, row.id],
+      );
+      res.json({ ok: true, video: publicImportedVideo(updated.rows[0], auth.user.id) });
+    } catch (err) {
+      if (isMissingDriveSchema(err)) {
+        res.status(503).json({ ok: false, error: DRIVE_MIGRATION_MESSAGE });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+app.get(
+  '/api/imported-videos',
+  asyncHandler(async (req, res) => {
+    const auth = authOf(req);
+    const db = getPool();
+    try {
+      const org = await getOrCreateOrganization(auth.user.org_id);
+      const rows = await db.query(
+        `SELECT * FROM imported_videos
+         WHERE org_id = $1
+           AND (
+             owner_user_id = $2
+             OR (ready = true AND ($3::uuid[] IS NULL OR team_id = ANY($3)))
+           )
+         ORDER BY created_at DESC`,
+        [org.id, auth.user.id, auth.teamIds],
+      );
+      res.json({ ok: true, videos: rows.rows.map((r) => publicImportedVideo(r, auth.user.id)) });
+    } catch (err) {
+      if (isMissingDriveSchema(err)) {
+        res.status(503).json({ ok: false, error: DRIVE_MIGRATION_MESSAGE });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+app.delete(
+  '/api/imported-videos/:id',
+  requirePermission('reels'),
+  asyncHandler(async (req, res) => {
+    const auth = authOf(req);
+    const db = getPool();
+    try {
+      const org = await getOrCreateOrganization(auth.user.org_id);
+      const found = await db.query('SELECT * FROM imported_videos WHERE id = $1 AND org_id = $2', [
+        String(req.params.id),
+        org.id,
+      ]);
+      const row = found.rows[0];
+      // Only the uploader or the org owner can delete an import.
+      if (!row || (row.owner_user_id !== auth.user.id && auth.user.role !== 'owner')) {
+        res.status(404).json({ ok: false, error: 'Imported video not found.' });
+        return;
+      }
+      if (typeof row.drive_file_id === 'string' && row.drive_file_id) {
+        // Best-effort Drive delete with the OWNER's token (the file
+        // lives in their Drive). If it fails — owner disconnected,
+        // already deleted — the library row still goes; a stray file
+        // in the owner's own Drive is theirs to remove.
+        const ownerToken = await freshDriveAccessToken(db, row.owner_user_id as string).catch(
+          () => null,
+        );
+        if (ownerToken) {
+          const deleted = await deleteDriveFile(ownerToken, row.drive_file_id as string);
+          if (!deleted) {
+            console.error(`Drive delete failed for imported video ${row.id as string} (row deleted anyway).`);
+          }
+        }
+      }
+      await db.query('DELETE FROM imported_videos WHERE id = $1', [row.id]);
+      res.json({ ok: true, deleted: true });
+    } catch (err) {
+      if (isMissingDriveSchema(err)) {
+        res.status(503).json({ ok: false, error: DRIVE_MIGRATION_MESSAGE });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+app.get(
+  '/api/imported-videos/:id/media-url',
+  asyncHandler(async (req, res) => {
+    const auth = authOf(req);
+    const db = getPool();
+    try {
+      const org = await getOrCreateOrganization(auth.user.org_id);
+      const found = await db.query('SELECT * FROM imported_videos WHERE id = $1 AND org_id = $2', [
+        String(req.params.id),
+        org.id,
+      ]);
+      const row = found.rows[0];
+      if (!row || !canSeeImportedVideo(row, auth)) {
+        res.status(404).json({ ok: false, error: 'Imported video not found.' });
+        return;
+      }
+      if (typeof row.drive_file_id !== 'string' || !row.drive_file_id) {
+        res.status(400).json({ ok: false, error: 'This import has no Drive file yet.' });
+        return;
+      }
+      // HONEST NOTE: this URL carries the VIDEO OWNER's Drive access
+      // token, not the caller's — an imported video plays for the
+      // org's coaches through the app record, by design (the owner
+      // imported it for the team). The token is short-lived (~1 hour),
+      // scoped to drive.file (only files SimpliGame created in the
+      // owner's Drive), and the URL is minted fresh per request for a
+      // signed-in coach who can already see the video in the library.
+      // Drive supports Range requests on media downloads, so the
+      // <video> element can seek for clip cutting.
+      const ownerToken = await freshDriveAccessToken(db, row.owner_user_id as string);
+      if (!ownerToken) {
+        res.status(400).json({
+          ok: false,
+          error: 'The video owner has disconnected Google Drive — this import cannot play right now.',
+        });
+        return;
+      }
+      res.json({
+        ok: true,
+        url: `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(row.drive_file_id as string)}?alt=media&access_token=${encodeURIComponent(ownerToken)}`,
+        expiresInSeconds: 3600,
+      });
+    } catch (err) {
+      if (isMissingDriveSchema(err)) {
+        res.status(503).json({ ok: false, error: DRIVE_MIGRATION_MESSAGE });
+        return;
+      }
+      throw err;
+    }
   }),
 );
 
