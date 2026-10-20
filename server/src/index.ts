@@ -1778,17 +1778,6 @@ function cleanReelClip(value: unknown): Record<string, unknown> | null {
   if (c.transition !== 'cut' && c.transition !== 'fade') return null;
   if (typeof c.overlay !== 'string' || c.overlay.length > REEL_OVERLAY_MAX) return null;
   if (typeof c.slowMo !== 'boolean') return null;
-  // Imported-video clips (011): optional fields — existing stored clips
-  // lack them, which reads as null. A present-but-invalid playerTag
-  // (non-string or >200 chars) rejects the clip, consistent with
-  // overlay handling above.
-  if (
-    c.playerTag !== undefined &&
-    c.playerTag !== null &&
-    (typeof c.playerTag !== 'string' || c.playerTag.length > REEL_OVERLAY_MAX)
-  ) {
-    return null;
-  }
   return {
     eventId: typeof c.eventId === 'string' ? c.eventId : null,
     gameId: typeof c.gameId === 'string' ? c.gameId : null,
@@ -1798,8 +1787,6 @@ function cleanReelClip(value: unknown): Record<string, unknown> | null {
     transition: c.transition,
     overlay: c.overlay,
     slowMo: c.slowMo,
-    importedVideoId: typeof c.importedVideoId === 'string' ? c.importedVideoId : null,
-    playerTag: typeof c.playerTag === 'string' && c.playerTag ? c.playerTag : null,
   };
 }
 
@@ -2074,147 +2061,6 @@ app.post(
           'This is a placeholder export, not a real video file. Real MP4 rendering comes in a later production build — your reel project (clips, order, trim, overlays, music) is saved and ready for it.',
       },
     });
-  }),
-);
-
-// ------------------------------------------------- imported videos (011)
-// Video Import: a library of YouTube videos imported BY LINK ONLY, for
-// footage that was not streamed in the app. No file upload, no video
-// storage — a row stores only a title, the parsed YouTube video ID,
-// and an optional team. Reel clips made from an imported video carry
-// its videoId (plus importedVideoId / playerTag in the clips JSONB), so
-// deleting a library entry does NOT touch reels — clips already in a
-// reel keep their videoId and keep playing.
-// Permissions: 'reels' (head_coach+), same tier as Reel Studio.
-// Scoping: owners see all org rows; non-owners see only rows on one of
-// their assigned teams — team_id NULL rows are org-wide = owner-only,
-// following the reels precedent.
-// If migration 011 has not run yet, endpoints fail with an explicit
-// run-the-migration message.
-const IMPORTED_VIDEOS_MIGRATION_MESSAGE =
-  'Imported videos are not set up yet — run migrations/011_imported_videos.sql in the Neon SQL Editor, then restart.';
-
-function isMissingImportedVideosTable(err: unknown): boolean {
-  return (err as { code?: string }).code === '42P01';
-}
-
-app.post(
-  '/api/imported-videos',
-  requirePermission('reels'),
-  asyncHandler(async (req, res) => {
-    const { title, youtube, team_id } = req.body ?? {};
-    if (typeof title !== 'string' || !title.trim()) {
-      res.status(400).json({ ok: false, error: 'Title must be a non-empty string.' });
-      return;
-    }
-    if (title.trim().length > 200) {
-      res.status(400).json({ ok: false, error: 'Title must be 200 characters or fewer.' });
-      return;
-    }
-    const youtubeVideoId = extractYouTubeVideoId(youtube);
-    if (!youtubeVideoId) {
-      res.status(400).json({ ok: false, error: "That doesn't look like a YouTube link." });
-      return;
-    }
-    const db = getPool();
-    const org = await getOrCreateOrganization(req.auth!.user.org_id);
-    const auth = authOf(req);
-    let teamId: string | null = null;
-    if (team_id !== undefined && team_id !== null && team_id !== '') {
-      // A non-UUID value can never be a team in the org — 404, not a
-      // Postgres cast error (500).
-      if (
-        typeof team_id !== 'string' ||
-        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(team_id)
-      ) {
-        res.status(404).json({ ok: false, error: 'Team not found.' });
-        return;
-      }
-      const team = await db.query('SELECT id FROM teams WHERE id = $1 AND org_id = $2', [
-        team_id,
-        org.id,
-      ]);
-      if (team.rows.length === 0 || !canAccessTeam(auth, team_id)) {
-        res.status(404).json({ ok: false, error: 'Team not found.' });
-        return;
-      }
-      teamId = team_id;
-    }
-    try {
-      const result = await db.query(
-        `INSERT INTO imported_videos (org_id, title, youtube_video_id, team_id, created_by)
-         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-        [org.id, title.trim(), youtubeVideoId, teamId, auth.user.id],
-      );
-      res.status(201).json({ ok: true, video: result.rows[0] });
-    } catch (err) {
-      if (isMissingImportedVideosTable(err)) {
-        res.status(503).json({ ok: false, error: IMPORTED_VIDEOS_MIGRATION_MESSAGE });
-        return;
-      }
-      throw err;
-    }
-  }),
-);
-
-app.get(
-  '/api/imported-videos',
-  requirePermission('reels'),
-  asyncHandler(async (req, res) => {
-    const db = getPool();
-    const org = await getOrCreateOrganization(req.auth!.user.org_id);
-    const auth = authOf(req);
-    const teamIds = auth.teamIds;
-    try {
-      const result = await db.query(
-        `SELECT * FROM imported_videos
-         WHERE org_id = $1${teamIds ? ' AND team_id = ANY($2)' : ''}
-         ORDER BY created_at DESC`,
-        teamIds ? [org.id, teamIds] : [org.id],
-      );
-      res.json({ ok: true, videos: result.rows });
-    } catch (err) {
-      if (isMissingImportedVideosTable(err)) {
-        res.status(503).json({ ok: false, error: IMPORTED_VIDEOS_MIGRATION_MESSAGE });
-        return;
-      }
-      throw err;
-    }
-  }),
-);
-
-app.delete(
-  '/api/imported-videos/:id',
-  requirePermission('reels'),
-  asyncHandler(async (req, res) => {
-    const db = getPool();
-    const org = await getOrCreateOrganization(req.auth!.user.org_id);
-    const auth = authOf(req);
-    const teamIds = auth.teamIds;
-    const videoId = String(req.params.id);
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(videoId)) {
-      res.status(404).json({ ok: false, error: 'Imported video not found.' });
-      return;
-    }
-    try {
-      const existing = await db.query(
-        `SELECT * FROM imported_videos
-         WHERE id = $1 AND org_id = $2${teamIds ? ' AND team_id = ANY($3)' : ''}`,
-        teamIds ? [videoId, org.id, teamIds] : [videoId, org.id],
-      );
-      if (existing.rows.length === 0) {
-        res.status(404).json({ ok: false, error: 'Imported video not found.' });
-        return;
-      }
-      await db.query('DELETE FROM imported_videos WHERE id = $1', [videoId]);
-      res.json({ ok: true, deleted: true });
-    } catch (err) {
-      if (isMissingImportedVideosTable(err)) {
-        res.status(503).json({ ok: false, error: IMPORTED_VIDEOS_MIGRATION_MESSAGE });
-        return;
-      }
-      throw err;
-    }
   }),
 );
 
