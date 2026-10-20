@@ -183,6 +183,25 @@ export interface ReelClip {
   transition: 'cut' | 'fade';
   overlay: string;
   slowMo: boolean;
+  /** Set only on clips made from an imported video (011). Optional
+   *  because existing stored clips lack it; missing = null. */
+  importedVideoId?: string | null;
+  /** Optional label for the player in an imported-video clip. */
+  playerTag?: string | null;
+}
+
+/** Video Import (011): a YouTube video imported BY LINK ONLY, for
+ *  footage that wasn't streamed in the app. No file is stored — only
+ *  the parsed YouTube video ID. team_id null = org-wide (owner-only
+ *  for non-owners, following the reels precedent). */
+export interface ImportedVideo {
+  id: string;
+  org_id: string;
+  title: string;
+  youtube_video_id: string;
+  team_id: string | null;
+  created_by: string | null;
+  created_at: string;
 }
 
 /** Reel project: ordered clips + music + status. Export is a mock in
