@@ -59,6 +59,119 @@ a {
   margin-top: 1.25rem;
 }
 
+/* Go Live wizard: page actions (Next / Go Live) sit apart from the
+   step content so the primary action is easy to find. */
+.wizard-actions {
+  margin-top: 1rem;
+}
+
+/* ---- HOME: org identity block + your teams ---- */
+
+.home-identity-main {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.home-identity-logo {
+  width: 64px;
+  height: 64px;
+  border-radius: 16px;
+  object-fit: cover;
+  flex: 0 0 auto;
+  box-shadow: var(--shadow);
+}
+
+.home-initials {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-weight: 800;
+  font-size: 1.5rem;
+  letter-spacing: 0.02em;
+}
+
+.home-org-name {
+  border-bottom: 0;
+  margin: 0;
+  padding-bottom: 0;
+  font-size: 1.6rem;
+}
+
+.home-swatches {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.35rem;
+}
+
+.swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid rgba(16, 40, 60, 0.18);
+  display: inline-block;
+  flex: 0 0 auto;
+}
+
+.stat-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.stat-chip {
+  background: var(--page-bg);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.3rem 0.8rem;
+  font-size: 0.92rem;
+  color: var(--muted);
+}
+
+.stat-chip strong {
+  color: var(--ink);
+}
+
+.team-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.team-card {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  text-align: left;
+  padding: 0.75rem 0.9rem;
+  border-radius: var(--radius);
+}
+
+.team-card-tile {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  color: #fff;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.team-card-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.team-card-text small {
+  color: var(--muted);
+}
+
 /* ---- Manual stat mode toggle (Live screen, below the video) ---- */
 
 .manual-stats-toggle {
@@ -107,10 +220,9 @@ a {
   letter-spacing: -0.01em;
 }
 
+/* Org rename button — now lives in the Account screen's Organization
+   section (white card), so it uses the plain button treatment. */
 .org-edit-btn {
-  background: rgba(255, 255, 255, 0.16);
-  border: 1px solid rgba(255, 255, 255, 0.6);
-  color: #fff;
   margin-left: 0.5rem;
   padding: 0.25rem 0.5rem;
 }
