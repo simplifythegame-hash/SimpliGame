@@ -172,17 +172,47 @@ export interface PlayerProfileStats {
 }
 
 /** Reel Studio: one clip in a reel project. startSeconds/endSeconds are
- *  trim offsets into the clip's video. Music is a placeholder track name
+ *  trim offsets into the clip's video. A clip draws from exactly one
+ *  source: a YouTube video (videoId — game highlights) or an imported
+ *  Drive video (importedVideoId). playerTag is a label only, used for
+ *  overlays on imported clips. Music is a placeholder track name
  *  only — no real audio in this round. */
 export interface ReelClip {
   eventId: string | null;
   gameId: string | null;
   videoId: string | null;
+  importedVideoId: string | null;
+  playerTag: string | null;
   startSeconds: number;
   endSeconds: number;
   transition: 'cut' | 'fade';
   overlay: string;
   slowMo: boolean;
+}
+
+/** A video imported into the uploader's OWN Google Drive (drive.file
+ *  scope — the file lives in their Drive, tied to them). ready=false
+ *  means the upload never completed; those rows are only visible to
+ *  their owner. Playback goes through a short-lived media URL, never
+ *  a raw Drive id. */
+export interface ImportedVideo {
+  id: string;
+  title: string;
+  team_id: string | null;
+  mime_type: string;
+  size_bytes: number;
+  ready: boolean;
+  owner_user_id: string;
+  mine: boolean;
+  created_at: string;
+}
+
+/** Per-user Google Drive connection status. email is the connected
+ *  Google account's address (display only) — never a token. */
+export interface GoogleStatus {
+  connected: boolean;
+  email: string | null;
+  setupRequired?: boolean;
 }
 
 /** Reel project: ordered clips + music + status. Export is a mock in
