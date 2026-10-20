@@ -46,6 +46,7 @@ export type IconName =
   | 'refresh'
   | 'trash'
   | 'back'
+  | 'next'
   | 'send'
   | 'menu'
   | 'logout'
@@ -245,6 +246,12 @@ const PATHS: Record<IconName, React.ReactNode> = {
     <>
       <path d="M19 12H5" />
       <path d="M12 19l-7-7 7-7" />
+    </>
+  ),
+  next: (
+    <>
+      <path d="M5 12h14" />
+      <path d="M12 5l7 7-7 7" />
     </>
   ),
   send: (
