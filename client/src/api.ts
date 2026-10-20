@@ -517,6 +517,19 @@ export const api = {
     );
   },
 
+  /** Update the signed-in user's own name/email (PATCH /api/auth/me —
+   *  edits only their own record; the session stays alive). */
+  async updateMe(name: string, email: string) {
+    const data = await parseJson(
+      await fetch('/api/auth/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, email }),
+      }),
+    );
+    return data.user as import('./types').AuthUser;
+  },
+
   async listCoaches() {
     const data = await parseJson(await fetch('/api/coaches'));
     return data.coaches as import('./types').Coach[];
