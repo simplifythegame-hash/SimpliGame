@@ -121,8 +121,6 @@ export default function App() {
   const [playerJersey, setPlayerJersey] = useState('');
   const [playerPosition, setPlayerPosition] = useState('');
   const [youtubeUrl, setYoutubeUrl] = useState('');
-  const [editingOrg, setEditingOrg] = useState(false);
-  const [orgName, setOrgName] = useState('');
   const [queuedCount, setQueuedCount] = useState(() => api.getQueuedEventCount());
   const [isOffline, setIsOffline] = useState(
     typeof navigator !== 'undefined' ? !navigator.onLine : false,
@@ -223,32 +221,15 @@ export default function App() {
     });
   }
 
-  // Start Live Game flow (Live tab): create a game WITHOUT jumping to
-  // the live screen — the coach stays in the setup panel (lineup +
-  // video link) until the Go Live gate is met.
-  async function handleCreateGameForSetup(teamId: string, opponent: string, mode: 'live' | 'film') {
-    const game = await api.createGame(teamId, opponent, 'Volleyball', mode);
+  // Go Live wizard (Live tab): "Add roster" creates a team via the
+  // existing endpoint and hands it back so the wizard can select it.
+  // Everything else in the wizard (create game, lineup, video,
+  // publish, Go Live) calls the api directly from LiveTabScreen so a
+  // mid-sequence failure surfaces in the wizard, not up here.
+  async function handleCreateRoster(name: string) {
+    const team = await api.createTeam(name, 'Volleyball', '');
     await refresh();
-    return game;
-  }
-
-  async function handleSetLineup(gameId: string, playerIds: string[]) {
-    await run(async () => {
-      await api.setLineup(gameId, playerIds);
-    });
-  }
-
-  async function handleSaveYouTubeForGame(gameId: string, url: string) {
-    await run(async () => {
-      await api.saveYouTube(gameId, url);
-    });
-  }
-
-  async function handleGoLiveFromSetup(gameId: string) {
-    await run(async () => {
-      await api.setGameStatus(gameId, 'live');
-    });
-    setView({ kind: 'liveGame', gameId, returnTo: 'live' });
+    return team;
   }
 
   async function handleLogEvent(stat: { label: string; points: number; side: 'ours' | 'opponent' }) {
@@ -363,50 +344,13 @@ export default function App() {
   return (
     <div className="page">
       <header className="org-header">
-        {editingOrg ? (
-          <form
-            className="row"
-            onSubmit={(e) => {
-              e.preventDefault();
-              run(async () => {
-                await api.renameOrganization(orgName);
-                setEditingOrg(false);
-              });
-            }}
-          >
-            <input
-              value={orgName}
-              onChange={(e) => setOrgName(e.target.value)}
-              placeholder="Organization name"
-              maxLength={100}
-              required
-              autoFocus
-            />
-            <button type="submit">Save</button>
-            <button type="button" onClick={() => setEditingOrg(false)}>
-              Cancel
-            </button>
-          </form>
-        ) : (
-          <div className="org-brand-row">
-            <img className="org-logo" src="/icon.svg?v=2" alt="SimpliGame logo" />
-            <h1>
-            {org.name}{' '}
-            {me.role === 'owner' && (
-              <button
-                className="org-edit-btn"
-                aria-label="Rename organization"
-                onClick={() => {
-                  setOrgName(org.name);
-                  setEditingOrg(true);
-                }}
-              >
-                ✏️
-              </button>
-            )}
-            </h1>
-          </div>
-        )}
+        {/* Org name is display-only here — renaming lives in the
+            Account screen (☰ menu → Account → Organization, owner
+            only). No edit control on the banner. */}
+        <div className="org-brand-row">
+          <img className="org-logo" src="/icon.svg?v=3" alt="SimpliGame logo" />
+          <h1>{org.name}</h1>
+        </div>
         <p className="tagline">SimpliGame — Simplify the Game</p>
         <p className="sub-hint">
           Signed in as {me.name} ({me.role.replace('_', ' ')})
@@ -500,11 +444,8 @@ export default function App() {
           teams={workspace.teams}
           players={workspace.players}
           games={workspace.games}
-          lineups={workspace.lineups}
-          onCreateGameForSetup={handleCreateGameForSetup}
-          onSetLineup={handleSetLineup}
-          onSaveYouTubeForGame={handleSaveYouTubeForGame}
-          onGoLive={handleGoLiveFromSetup}
+          onCreateRoster={handleCreateRoster}
+          onRefresh={refresh}
           onOpenLiveGame={(gameId) => setView({ kind: 'liveGame', gameId, returnTo: 'live' })}
           onOpenDetail={(gameId) => setView({ kind: 'detail', gameId, returnTo: 'live' })}
           onOpenReview={(gameId) => setView({ kind: 'review', gameId, returnTo: 'live' })}
@@ -670,7 +611,12 @@ export default function App() {
       )}
 
       {view.kind === 'account' && (
-        <AccountScreen me={me} onSaved={(user) => setMe(user)} />
+        <AccountScreen
+          me={me}
+          onSaved={(user) => setMe(user)}
+          orgName={org.name}
+          onOrganizationChanged={() => void refresh()}
+        />
       )}
 
       {view.kind === 'phones' && canRole(me.role, 'head_coach') && (
@@ -710,9 +656,14 @@ function GameListItem(props: {
   );
 }
 
-/** HOME (prototype "Overview"): org summary, live / upcoming / recent
- *  games, teams, and quick links into the other tabs. Every number comes
- *  from the loaded workspace — nothing is invented. */
+/** HOME (prototype "Overview"): org identity block on top, "Your
+ *  teams" directly under it, then Live now / Upcoming / Recent
+ *  results, and a slim quick-links strip at the bottom. Presentation
+ *  only — every number comes from the loaded workspace. For
+ *  team-scoped accounts the workspace already contains only their
+ *  assigned teams (the server filters by assignment), so "Your
+ *  teams" is exactly the teams they are signed up for; owners see
+ *  all of the org's teams. */
 function HomeOverviewScreen(props: {
   workspace: Workspace;
   role: ClientRole;
@@ -722,6 +673,7 @@ function HomeOverviewScreen(props: {
   onSelectTeam: (teamId: string) => void;
 }) {
   const { workspace } = props;
+  const org = workspace.organization;
   const teamName = (teamId: string) => workspace.teams.find((t) => t.id === teamId)?.name ?? 'Team';
   const liveGames = workspace.games.filter((g) => g.status === 'live');
   const upcomingGames = workspace.games.filter((g) => g.status === 'draft');
@@ -731,27 +683,86 @@ function HomeOverviewScreen(props: {
     .slice()
     .reverse()
     .slice(0, 5);
+  // Fallback tiles when no logo is set: initials on the org's brand
+  // colors (the org record's logo_url is used as-is when present —
+  // no upload feature, no new data).
+  const initials = (name: string) =>
+    name
+      .trim()
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((w) => w[0]?.toUpperCase() ?? '')
+      .join('') || '?';
+  const brandTileStyle = {
+    background: `linear-gradient(135deg, ${org.primary_color}, ${org.secondary_color})`,
+  };
   return (
     <>
-      <section>
-        <h2>HOME — {workspace.organization.name}</h2>
-        <p>
-          {workspace.teams.length} team{workspace.teams.length === 1 ? '' : 's'} ·{' '}
-          {workspace.players.length} player{workspace.players.length === 1 ? '' : 's'} ·{' '}
-          {workspace.games.length} game{workspace.games.length === 1 ? '' : 's'}
-        </p>
-        <div className="row">
-          <button onClick={() => props.onGoTab({ kind: 'live' })}>Live</button>
-          <button onClick={() => props.onGoTab({ kind: 'teams' })}>Team</button>
-          {canRole(props.role, 'head_coach') && (
-            <>
-              <button onClick={() => props.onGoTab({ kind: 'players' })}>Player Management</button>
-              <button onClick={() => props.onGoTab({ kind: 'highlights' })}>Highlight Builder</button>
-            </>
+      {/* 1. Org identity block */}
+      <section className="home-identity">
+        <div className="home-identity-main">
+          {org.logo_url ? (
+            <img className="home-identity-logo" src={org.logo_url} alt="" />
+          ) : (
+            <div className="home-identity-logo home-initials" style={brandTileStyle} aria-hidden="true">
+              {initials(org.name)}
+            </div>
           )}
+          <div className="home-identity-text">
+            <h2 className="home-org-name">{org.name}</h2>
+            <div className="home-swatches">
+              <span className="swatch" style={{ background: org.primary_color }} title={`Primary ${org.primary_color}`} />
+              <span className="swatch" style={{ background: org.secondary_color }} title={`Secondary ${org.secondary_color}`} />
+              <span className="sub-hint">Brand colors</span>
+            </div>
+          </div>
+        </div>
+        <div className="stat-chips">
+          <span className="stat-chip">
+            <strong>{workspace.teams.length}</strong> team{workspace.teams.length === 1 ? '' : 's'}
+          </span>
+          <span className="stat-chip">
+            <strong>{workspace.players.length}</strong> player{workspace.players.length === 1 ? '' : 's'}
+          </span>
+          <span className="stat-chip">
+            <strong>{workspace.games.length}</strong> game{workspace.games.length === 1 ? '' : 's'}
+          </span>
         </div>
       </section>
 
+      {/* 2. Your teams — assigned teams for scoped accounts, all
+          teams for the owner (the workspace is already scoped). */}
+      <section>
+        <h2>Your teams</h2>
+        {workspace.teams.length === 0 ? (
+          <p>
+            {props.role === 'owner'
+              ? 'No teams yet — create one on the Team tab.'
+              : 'No teams assigned to you yet — ask your owner or head coach.'}
+          </p>
+        ) : (
+          <div className="team-grid">
+            {workspace.teams.map((t) => {
+              const count = workspace.players.filter((p) => p.team_id === t.id).length;
+              return (
+                <button key={t.id} className="team-card" onClick={() => props.onSelectTeam(t.id)}>
+                  <span className="team-card-tile" style={brandTileStyle} aria-hidden="true">
+                    {initials(t.name)}
+                  </span>
+                  <span className="team-card-text">
+                    <strong>{t.name}</strong>
+                    <small>
+                      {t.sport} · {count} player{count === 1 ? '' : 's'}
+                    </small>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {/* 3. Games, in clean card sections */}
       {liveGames.length > 0 && (
         <section>
           <h2>Live now</h2>
@@ -807,42 +818,43 @@ function HomeOverviewScreen(props: {
         )}
       </section>
 
+      {/* 4. Quick links */}
       <section>
-        <h2>Teams</h2>
-        {workspace.teams.length === 0 ? (
-          <p>No teams yet.</p>
-        ) : (
-          <ul className="list">
-            {workspace.teams.map((t) => (
-              <li key={t.id}>
-                {t.name} ({t.sport}) — {workspace.players.filter((p) => p.team_id === t.id).length}{' '}
-                player{workspace.players.filter((p) => p.team_id === t.id).length === 1 ? '' : 's'}{' '}
-                <button onClick={() => props.onSelectTeam(t.id)}>Open roster</button>
-              </li>
-            ))}
-          </ul>
-        )}
+        <h2>Jump to</h2>
+        <div className="row">
+          <button onClick={() => props.onGoTab({ kind: 'live' })} className="btn-icon"><Icon name="live" />Live</button>
+          <button onClick={() => props.onGoTab({ kind: 'teams' })} className="btn-icon"><Icon name="team" />Team</button>
+          {canRole(props.role, 'head_coach') && (
+            <>
+              <button onClick={() => props.onGoTab({ kind: 'players' })} className="btn-icon"><Icon name="players" />Player Management</button>
+              <button onClick={() => props.onGoTab({ kind: 'highlights' })} className="btn-icon"><Icon name="highlights" />Highlight Builder</button>
+            </>
+          )}
+        </div>
       </section>
     </>
   );
 }
 
-/** Live tab (prototype "Capture"): Start Live Game flow.
- *  The main page lists the ROSTERS (teams). Click a team → the Start
- *  Live Game panel: pick an existing draft game or create one, choose
- *  the 6 starters, add the video link — then Go Live (gated on 6
- *  starters + video link) jumps straight to the live screen. Live-now
- *  games keep a quick resume strip; finals stay listed below. */
+/** Live tab (prototype "Capture"): the Go Live wizard.
+ *  Page 1 — pick a ROSTER (or add one, owner only); the starting-lineup
+ *  picker queues right on the same page: tap exactly 6 starters, then
+ *  Next. Page 2 — who we are playing (opponent) + the live link setup
+ *  (video link + watch link). Go Live does two things: (1) it creates
+ *  the game, applies the Page-1 lineup, attaches the video link,
+ *  publishes the game so the watch link exists, and runs the Go Live
+ *  transition — which texts the watch link to the enrolled family
+ *  contacts of every player on the roster; and (2) it flips to the
+ *  live screen for that game. Wizard state lives client-side until
+ *  Go Live is pressed: abandoning the wizard mid-way creates nothing.
+ *  Live-now games keep a quick resume strip; finals stay listed below. */
 function LiveTabScreen(props: {
   role: ClientRole;
   teams: Team[];
   players: Player[];
   games: Game[];
-  lineups: LineupRow[];
-  onCreateGameForSetup: (teamId: string, opponent: string, mode: 'live' | 'film') => Promise<Game>;
-  onSetLineup: (gameId: string, playerIds: string[]) => Promise<void>;
-  onSaveYouTubeForGame: (gameId: string, url: string) => Promise<void>;
-  onGoLive: (gameId: string) => Promise<void>;
+  onCreateRoster: (name: string) => Promise<Team>;
+  onRefresh: () => Promise<void>;
   onOpenLiveGame: (gameId: string) => void;
   onOpenDetail: (gameId: string) => void;
   onOpenReview: (gameId: string) => void;
@@ -850,17 +862,34 @@ function LiveTabScreen(props: {
   const teamName = (teamId: string) => props.teams.find((t) => t.id === teamId)?.name ?? 'Team';
   const liveGames = props.games.filter((g) => g.status === 'live');
   const finalGames = props.games.filter((g) => g.status === 'final');
+  // Wizard setup (create game, set lineup, attach video, publish) is
+  // head_coach+ — the same permission tier as game setup today. The
+  // Go Live transition itself is assistant+, but every step before it
+  // needs head_coach, so the wizard is effectively a head-coach flow.
+  const canSetup = canRole(props.role, 'head_coach');
+  const canPublish = canRole(props.role, 'head_coach');
 
-  // --- Start Live Game panel state ---
-  const [selectedTeamId, setSelectedTeamId] = useState('');
-  const [setupGameId, setSetupGameId] = useState<string | null>(null);
+  // --- Go Live wizard state (client-side until Go Live creates the game) ---
+  const [step, setStep] = useState<1 | 2>(1);
+  const [wizardTeamId, setWizardTeamId] = useState('');
   const [starterIds, setStarterIds] = useState<string[]>([]);
-  const [lineupSaved, setLineupSaved] = useState(false);
+  const [opponent, setOpponent] = useState('');
   const [videoInput, setVideoInput] = useState('');
-  const [setupBusy, setSetupBusy] = useState(false);
-  const [setupError, setSetupError] = useState('');
-  const [newOpponent, setNewOpponent] = useState('');
-  const [newMode, setNewMode] = useState<'live' | 'film'>('live');
+  const [videoUrl, setVideoUrl] = useState('');
+  const [videoSaved, setVideoSaved] = useState(false);
+  const [newRosterName, setNewRosterName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [wizardError, setWizardError] = useState('');
+  // Set once Go Live has created the game. Every later step is
+  // idempotent (lineup replaces, video replaces, publish reuses the
+  // token), so pressing Go Live again after a mid-sequence failure
+  // resumes instead of creating a duplicate game.
+  const [createdGameId, setCreatedGameId] = useState<string | null>(null);
+  // Shown on Page 2 when the game went live WITHOUT being published
+  // (the user has no publish permission): the game is live, but family
+  // texts can't send until a head coach publishes it.
+  const [liveNote, setLiveNote] = useState('');
+  const [copied, setCopied] = useState(false);
 
   // AI Vision jobs (head_coach+): per-game status for the Final list.
   // Best-effort — a failed fetch leaves the list without AI buttons
@@ -886,34 +915,18 @@ function LiveTabScreen(props: {
     }
   }
 
-  const selectedTeam = props.teams.find((t) => t.id === selectedTeamId);
-  const roster = props.players.filter((p) => p.team_id === selectedTeamId);
-  const setupGame = props.games.find((g) => g.id === setupGameId);
-  const draftGamesForTeam = props.games.filter(
-    (g) => g.team_id === selectedTeamId && g.status === 'draft',
-  );
+  const wizardTeam = props.teams.find((t) => t.id === wizardTeamId);
+  const roster = props.players.filter((p) => p.team_id === wizardTeamId);
+  const createdGame = createdGameId
+    ? props.games.find((g) => g.id === createdGameId)
+    : undefined;
 
-  // When a game is picked/created, pre-select its current lineup (game
-  // creation seeds the first 6) and mark it saved iff it is exactly 6.
-  // Keyed on the game only — a refresh (e.g. saving the video link)
-  // must NOT wipe an unsaved starter selection.
-  useEffect(() => {
-    if (!setupGameId) return;
-    const rows = props.lineups.filter((l) => l.game_id === setupGameId);
-    setStarterIds(rows.map((r) => r.player_id));
-    setLineupSaved(rows.length === 6);
-    setVideoInput('');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [setupGameId]);
-
-  function pickTeam(teamId: string) {
-    setSelectedTeamId(teamId);
-    setSetupGameId(null);
+  function pickRoster(teamId: string) {
+    setWizardTeamId(teamId);
     setStarterIds([]);
-    setLineupSaved(false);
-    setVideoInput('');
-    setSetupError('');
-    setNewOpponent('');
+    setCreatedGameId(null);
+    setLiveNote('');
+    setWizardError('');
   }
 
   function toggleStarter(playerId: string) {
@@ -922,53 +935,114 @@ function LiveTabScreen(props: {
       if (prev.length >= 6) return prev;
       return [...prev, playerId];
     });
-    // Any change means the saved lineup no longer matches the picks.
-    setLineupSaved(false);
   }
 
-  async function saveLineup() {
-    if (!setupGameId || starterIds.length !== 6) return;
-    setSetupBusy(true);
-    setSetupError('');
+  async function addRoster(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newRosterName.trim()) return;
+    setBusy(true);
+    setWizardError('');
     try {
-      await props.onSetLineup(setupGameId, starterIds);
-      setLineupSaved(true);
-    } catch (e) {
-      setSetupError(e instanceof Error ? e.message : 'Could not save lineup');
+      const team = await props.onCreateRoster(newRosterName.trim());
+      setNewRosterName('');
+      pickRoster(team.id);
+    } catch (err) {
+      setWizardError(err instanceof Error ? err.message : 'Could not add roster');
     } finally {
-      setSetupBusy(false);
+      setBusy(false);
     }
   }
 
-  async function saveVideo() {
-    if (!setupGameId || !videoInput.trim()) return;
-    setSetupBusy(true);
-    setSetupError('');
-    try {
-      await props.onSaveYouTubeForGame(setupGameId, videoInput.trim());
-      setVideoInput('');
-    } catch (e) {
-      setSetupError(e instanceof Error ? e.message : 'Could not save video link');
-    } finally {
-      setSetupBusy(false);
-    }
+  // The video link is "saved" into wizard state (not the server — the
+  // game doesn't exist until Go Live). Editing the input afterwards
+  // un-saves it, so Go Live never attaches a stale link by accident.
+  function saveVideoLink() {
+    if (!videoInput.trim()) return;
+    setVideoUrl(videoInput.trim());
+    setVideoSaved(true);
   }
+
+  const nextOk = !!wizardTeam && starterIds.length === 6;
+  const goLiveOk = opponent.trim() !== '' && videoSaved;
 
   async function goLive() {
-    if (!setupGameId) return;
-    setSetupBusy(true);
-    setSetupError('');
+    if (!wizardTeam || !goLiveOk) return;
+    setBusy(true);
+    setWizardError('');
     try {
-      await props.onGoLive(setupGameId);
+      let gameId = createdGameId;
+      if (!gameId) {
+        const game = await api.createGame(
+          wizardTeamId,
+          opponent.trim(),
+          wizardTeam.sport || 'Volleyball',
+          'live',
+        );
+        gameId = game.id;
+        setCreatedGameId(gameId);
+      }
+      await api.setLineup(gameId, starterIds);
+      await api.saveYouTube(gameId, videoUrl);
+      let published = createdGame?.published ?? false;
+      if (canPublish) {
+        const res = await api.publishGame(gameId);
+        published = !!res.game.published;
+      }
+      // The Go Live transition texts families the watch link
+      // server-side — but only for a published game (the text IS the
+      // link), and it goes to the enrolled contacts of every player
+      // on this roster's team.
+      if (createdGame?.status !== 'live') {
+        await api.setGameStatus(gameId, 'live');
+      }
+      await props.onRefresh().catch(() => {});
+      if (published) {
+        // (2) flip to the live screen, 6 starters on court.
+        props.onOpenLiveGame(gameId);
+      } else {
+        // Live, but unpublished: proceed, with the note in plain sight.
+        setLiveNote(
+          'You are live — but this game is not published, so family texts did not send (the text is the watch link). A head coach can publish it from Game Detail, then families can be texted the link.',
+        );
+      }
     } catch (e) {
-      setSetupError(e instanceof Error ? e.message : 'Could not go live');
-      setSetupBusy(false);
+      setWizardError(
+        e instanceof Error
+          ? `${e.message} If the game was already created, pressing Go Live again picks up where it left off.`
+          : 'Could not go live',
+      );
+    } finally {
+      setBusy(false);
     }
   }
 
-  // Go Live GATE: all 6 starters picked + saved AND a video link saved.
-  const videoSaved = !!setupGame?.youtube_video_id;
-  const gateOk = lineupSaved && videoSaved;
+  async function unpublishCreated() {
+    if (!createdGameId) return;
+    setBusy(true);
+    setWizardError('');
+    try {
+      await api.unpublishGame(createdGameId);
+      await props.onRefresh().catch(() => {});
+    } catch (e) {
+      setWizardError(e instanceof Error ? e.message : 'Could not unpublish');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function regenerateCreated() {
+    if (!createdGameId) return;
+    setBusy(true);
+    setWizardError('');
+    try {
+      await api.revokeGameLink(createdGameId);
+      await props.onRefresh().catch(() => {});
+    } catch (e) {
+      setWizardError(e instanceof Error ? e.message : 'Could not regenerate the link');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <>
@@ -991,113 +1065,67 @@ function LiveTabScreen(props: {
           </>
         )}
 
-        <h3>Start Live Game</h3>
-        <p>Pick a roster, then set up the game — 6 starters + video link — and go live.</p>
-        <ul className="list">
-          {props.teams.map((t) => (
-            <li key={t.id}>
-              <button
-                className={t.id === selectedTeamId ? 'selected' : ''}
-                onClick={() => pickTeam(t.id)}
-              >
-                {t.name} ({props.players.filter((p) => p.team_id === t.id).length} players)
-              </button>
-            </li>
-          ))}
-        </ul>
-        {props.teams.length === 0 && <p>No teams yet — create one on the Team tab.</p>}
+        <div className="setup-panel wizard">
+          <h3>Start Live Game</h3>
+          <p className="sub-hint">
+            Step {step} of 2 — {step === 1 ? 'Roster & starting lineup' : 'Live link & opponent'}
+          </p>
 
-        {selectedTeam && (
-          <div className="setup-panel">
-            <h3>Start Live Game — {selectedTeam.name}</h3>
-            {!setupGame ? (
-              <>
-                <h4>1. Pick a game</h4>
-                {draftGamesForTeam.length === 0 ? (
-                  <p>No upcoming games for this team — create one below.</p>
-                ) : (
-                  <ul className="list">
-                    {draftGamesForTeam.map((g) => (
-                      <li key={g.id}>
-                        vs {g.opponent || 'TBD'} · {g.mode === 'film' ? 'Film review' : 'Live game'}{' '}
-                        <button onClick={() => setSetupGameId(g.id)}>Use this game</button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {canRole(props.role, 'head_coach') && (
-                  <form
-                    className="row"
-                    onSubmit={async (e) => {
-                      e.preventDefault();
-                      setSetupBusy(true);
-                      setSetupError('');
-                      try {
-                        const game = await props.onCreateGameForSetup(
-                          selectedTeamId,
-                          newOpponent,
-                          newMode,
-                        );
-                        setNewOpponent('');
-                        setSetupGameId(game.id);
-                      } catch (err) {
-                        setSetupError(err instanceof Error ? err.message : 'Could not create game');
-                      } finally {
-                        setSetupBusy(false);
-                      }
-                    }}
-                  >
-                    <input
-                      value={newOpponent}
-                      onChange={(e) => setNewOpponent(e.target.value)}
-                      placeholder="Opponent"
-                    />
-                    <select
-                      value={newMode}
-                      onChange={(e) => setNewMode(e.target.value as 'live' | 'film')}
+          {step === 1 && (
+            <>
+              <h4>Pick a roster</h4>
+              <ul className="list">
+                {props.teams.map((t) => (
+                  <li key={t.id}>
+                    <button
+                      className={t.id === wizardTeamId ? 'selected' : ''}
+                      onClick={() => pickRoster(t.id)}
                     >
-                      <option value="live">Live game</option>
-                      <option value="film">Film review</option>
-                    </select>
-                    <button type="submit" disabled={setupBusy}>
-                      {setupBusy ? 'Creating…' : 'Create game'}
+                      {t.name} ({props.players.filter((p) => p.team_id === t.id).length} players)
                     </button>
-                  </form>
-                )}
-                {setupError && <p className="error">{setupError}</p>}
-              </>
-            ) : (
-              <>
-                <p>
-                  <strong>
-                    {selectedTeam.name} vs {setupGame.opponent || 'TBD'}
-                  </strong>{' '}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSetupGameId(null);
-                      setStarterIds([]);
-                      setLineupSaved(false);
-                      setVideoInput('');
-                    }}
-                  >
-                    Change game
+                  </li>
+                ))}
+              </ul>
+              {props.teams.length === 0 && (
+                <p>No rosters yet — add one below or on the Team tab.</p>
+              )}
+              {props.role === 'owner' && (
+                <form className="row" onSubmit={addRoster}>
+                  <input
+                    value={newRosterName}
+                    onChange={(e) => setNewRosterName(e.target.value)}
+                    placeholder="New roster name"
+                    maxLength={100}
+                  />
+                  <button type="submit" disabled={!newRosterName.trim() || busy} className="btn-icon">
+                    <Icon name="plus" />Add roster
                   </button>
+                </form>
+              )}
+              {!canSetup && (
+                <p className="sub-hint">
+                  A head coach sets up a new live game (roster, lineup, and links). Once a
+                  game is set up, an assistant can start it from the game itself.
                 </p>
+              )}
 
-                <h4>2. Choose 6 to start</h4>
-                <p>{starterIds.length} of 6 selected</p>
-                {roster.length < 6 ? (
-                  <p>Add at least 6 players to this roster first (Team tab).</p>
-                ) : (
-                  <>
+              {wizardTeam && (
+                <>
+                  <h4>Starting lineup — {wizardTeam.name}</h4>
+                  <p>
+                    {starterIds.length} of 6 selected. Tap 6 players to start the game — they
+                    open on court on the live screen.
+                  </p>
+                  {roster.length < 6 ? (
+                    <p>Add at least 6 players to this roster first (Team tab).</p>
+                  ) : (
                     <div className="cards">
                       {roster.map((p) => (
                         <button
                           key={p.id}
                           className={`card ${starterIds.includes(p.id) ? 'selected' : ''}`}
                           onClick={() => toggleStarter(p.id)}
-                          disabled={!canRole(props.role, 'head_coach')}
+                          disabled={!canSetup}
                         >
                           <strong>#{p.jersey_number}</strong>
                           <br />
@@ -1107,73 +1135,182 @@ function LiveTabScreen(props: {
                         </button>
                       ))}
                     </div>
-                    {canRole(props.role, 'head_coach') &&
-                      (lineupSaved ? (
-                        <p>✓ Starting 6 set.</p>
-                      ) : (
-                        <button disabled={starterIds.length !== 6 || setupBusy} onClick={saveLineup}>
-                          Set starting 6
-                        </button>
-                      ))}
-                  </>
-                )}
+                  )}
+                </>
+              )}
 
-                <h4>3. Go Live link setup</h4>
-                {videoSaved ? (
-                  <p>✓ Video link saved. Replace it below if needed.</p>
-                ) : (
-                  <p>Add the video link before going live.</p>
+              {wizardError && <p className="error">{wizardError}</p>}
+              <div className="row wizard-actions">
+                <button
+                  disabled={!nextOk}
+                  onClick={() => {
+                    setWizardError('');
+                    setStep(2);
+                  }}
+                  className="btn-icon"
+                >
+                  Next<Icon name="next" />
+                </button>
+                {!nextOk && (
+                  <span className="sub-hint">
+                    {!wizardTeam
+                      ? 'Pick a roster to continue.'
+                      : `Pick ${6 - starterIds.length} more starter${6 - starterIds.length === 1 ? '' : 's'} to continue.`}
+                  </span>
                 )}
-                {canRole(props.role, 'head_coach') && (
-                  <form
-                    className="row"
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      void saveVideo();
-                    }}
-                  >
+              </div>
+            </>
+          )}
+
+          {step === 2 && wizardTeam && (
+            <>
+              <p>
+                <strong>{wizardTeam.name}</strong> · Starting 6 set ✓{' '}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setWizardError('');
+                    setStep(1);
+                  }}
+                  className="btn-icon"
+                >
+                  <Icon name="back" />Back
+                </button>
+              </p>
+
+              <h4>Who are we playing?</h4>
+              <div className="row">
+                <input
+                  value={opponent}
+                  onChange={(e) => setOpponent(e.target.value)}
+                  placeholder="Opponent"
+                  className="wide"
+                  disabled={!canSetup}
+                />
+              </div>
+
+              <h4>Video link</h4>
+              {videoSaved ? (
+                <p>✓ Video link saved. Replace it below if needed — editing un-saves it.</p>
+              ) : (
+                <p>Add the YouTube link for this game&apos;s stream or video.</p>
+              )}
+              <form
+                className="row"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  saveVideoLink();
+                }}
+              >
+                <input
+                  value={videoInput}
+                  onChange={(e) => {
+                    setVideoInput(e.target.value);
+                    setVideoSaved(false);
+                  }}
+                  placeholder="Paste YouTube link or video ID"
+                  className="wide"
+                  disabled={!canSetup}
+                />
+                <button
+                  type="submit"
+                  disabled={!videoInput.trim() || videoSaved}
+                  className="btn-icon"
+                >
+                  <Icon name="check" />Save video link
+                </button>
+              </form>
+
+              <h4>Watch link</h4>
+              {createdGame?.published && createdGame.publish_token ? (
+                <>
+                  <p>Published — anyone with the link can watch this game live. No login needed.</p>
+                  <div className="row">
                     <input
-                      value={videoInput}
-                      onChange={(e) => setVideoInput(e.target.value)}
-                      placeholder="Paste YouTube link or video ID"
+                      readOnly
+                      value={`${window.location.origin}/watch/${createdGame.publish_token}`}
                       className="wide"
+                      onFocus={(e) => e.target.select()}
                     />
                     <button
-                      type="submit"
-                      disabled={!videoInput.trim() || setupBusy}
+                      type="button"
+                      className="btn-icon"
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(
+                            `${window.location.origin}/watch/${createdGame.publish_token}`,
+                          );
+                          setCopied(true);
+                          setTimeout(() => setCopied(false), 2000);
+                        } catch {
+                          // Clipboard unavailable — the input above is
+                          // selected on focus, so it can be copied manually.
+                        }
+                      }}
+                    >
+                      <Icon name="copy" />{copied ? 'Copied!' : 'Copy link'}
+                    </button>
+                  </div>
+                  {canPublish && (
+                    <div className="row">
+                      <button onClick={() => void unpublishCreated()} disabled={busy} className="btn-icon"><Icon name="eyeOff" />Unpublish</button>
+                      <button onClick={() => void regenerateCreated()} disabled={busy} className="btn-icon"><Icon name="refresh" />Regenerate link</button>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <p>
+                  Going live publishes this game and creates its shareable watch link.
+                  Families of every player on the roster get the link by text automatically
+                  the moment you go live.
+                  {!canPublish &&
+                    ' Publishing needs a head coach — without it the game still goes live, but the family texts cannot send.'}
+                </p>
+              )}
+
+              <h4>Go Live</h4>
+              {liveNote ? (
+                <>
+                  <p className="mock-note">{liveNote}</p>
+                  <div className="row wizard-actions">
+                    <button
+                      onClick={() => createdGameId && props.onOpenLiveGame(createdGameId)}
                       className="btn-icon"
                     >
-                      <Icon name="check" />Save video
+                      <Icon name="goLive" />Open the live game
                     </button>
-                  </form>
-                )}
-
-                <h4>Go Live</h4>
-                {!gateOk && (
-                  <p className="sub-hint">
-                    To go live:{' '}
-                    {!lineupSaved ? 'set the starting 6' : ''}
-                    {!lineupSaved && !videoSaved ? ' + ' : ''}
-                    {!videoSaved ? 'add the video link' : ''}.
-                  </p>
-                )}
-                {canRole(props.role, 'assistant') ? (
-                  <button
-                    disabled={!gateOk || setupBusy}
-                    onClick={() => void goLive()}
-                    className="btn-icon"
-                  >
-                    <Icon name="goLive" />
-                    {setupBusy ? 'Going live…' : 'Go Live'}
-                  </button>
-                ) : (
-                  <p className="sub-hint">An assistant or head coach starts the game.</p>
-                )}
-                {setupError && <p className="error">{setupError}</p>}
-              </>
-            )}
-          </div>
-        )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  {!goLiveOk && (
+                    <p className="sub-hint">
+                      To go live:{' '}
+                      {opponent.trim() === '' ? 'name the opponent' : ''}
+                      {opponent.trim() === '' && !videoSaved ? ' + ' : ''}
+                      {!videoSaved ? 'save the video link' : ''}.
+                    </p>
+                  )}
+                  {canRole(props.role, 'assistant') ? (
+                    <div className="row wizard-actions">
+                      <button
+                        disabled={!goLiveOk || busy}
+                        onClick={() => void goLive()}
+                        className="btn-icon"
+                      >
+                        <Icon name="goLive" />
+                        {busy ? 'Going live…' : 'Go Live'}
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="sub-hint">An assistant or head coach starts the game.</p>
+                  )}
+                </>
+              )}
+              {wizardError && <p className="error">{wizardError}</p>}
+            </>
+          )}
+        </div>
 
         <h3>Final</h3>
         {finalGames.length === 0 ? (
@@ -2007,7 +2144,7 @@ function LoginScreen({ onDone }: { onDone: (user: AuthUser) => void }) {
   const [busy, setBusy] = useState(false);
   return (
     <div className="page">
-      <div className="org-brand-row"><img className="org-logo" src="/icon.svg?v=2" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
+      <div className="org-brand-row"><img className="org-logo" src="/icon.svg?v=3" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
       <p className="tagline">Simplify the Game</p>
       <section>
         <h2>Log in</h2>
@@ -2051,7 +2188,7 @@ function SetupScreen({ onDone }: { onDone: (user: AuthUser) => void }) {
   const [busy, setBusy] = useState(false);
   return (
     <div className="page">
-      <div className="org-brand-row"><img className="org-logo" src="/icon.svg?v=2" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
+      <div className="org-brand-row"><img className="org-logo" src="/icon.svg?v=3" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
       <p className="tagline">Simplify the Game</p>
       <section>
         <h2>Set up the owner account</h2>
@@ -2166,8 +2303,21 @@ function SettingsMenu(props: {
 
 /** Account screen: edit your own name/email (PATCH /api/auth/me — the
  *  server edits only your own record and keeps the session alive), with
- *  the self-service change-password form housed below the info form. */
-function AccountScreen({ me, onSaved }: { me: AuthUser; onSaved: (user: AuthUser) => void }) {
+ *  the self-service change-password form housed below the info form.
+ *  Owners also get the Organization section: the org rename control
+ *  that used to sit on the header banner (moved here; the endpoint,
+ *  PATCH /api/organization, is owner-only 'org' and unchanged). */
+function AccountScreen({
+  me,
+  onSaved,
+  orgName,
+  onOrganizationChanged,
+}: {
+  me: AuthUser;
+  onSaved: (user: AuthUser) => void;
+  orgName: string;
+  onOrganizationChanged: () => void;
+}) {
   const [name, setName] = useState(me.name);
   const [email, setEmail] = useState(me.email);
   const [error, setError] = useState('');
@@ -2223,11 +2373,101 @@ function AccountScreen({ me, onSaved }: { me: AuthUser; onSaved: (user: AuthUser
           {success && <p>{success}</p>}
         </form>
       </section>
+      {me.role === 'owner' && (
+        <OrganizationSection orgName={orgName} onChanged={onOrganizationChanged} />
+      )}
       <section>
         <h2>Password</h2>
         <ChangePasswordForm />
       </section>
     </>
+  );
+}
+
+/** Organization rename (owner only): the same control that used to sit
+ *  on the header banner — name input + save via PATCH /api/organization
+ *  (the server enforces owner-only 'org'). On success the workspace
+ *  refreshes so the header picks up the new name. */
+function OrganizationSection({
+  orgName,
+  onChanged,
+}: {
+  orgName: string;
+  onChanged: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(orgName);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    setSuccess('');
+    setBusy(true);
+    try {
+      await api.renameOrganization(name);
+      setEditing(false);
+      setSuccess('Organization name saved.');
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to rename organization.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section>
+      <h2>Organization</h2>
+      {editing ? (
+        <form
+          className="row"
+          onSubmit={handleSubmit}
+        >
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Organization name"
+            maxLength={100}
+            required
+            autoFocus
+          />
+          <button type="submit" disabled={busy}>
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setEditing(false);
+              setName(orgName);
+              setError('');
+            }}
+          >
+            Cancel
+          </button>
+        </form>
+      ) : (
+        <div className="row">
+          <span>{orgName}</span>
+          <button
+            type="button"
+            className="org-edit-btn"
+            aria-label="Rename organization"
+            onClick={() => {
+              setName(orgName);
+              setEditing(true);
+              setSuccess('');
+            }}
+          >
+            ✏️ Rename
+          </button>
+        </div>
+      )}
+      {error && <p className="error">{error}</p>}
+      {success && <p>{success}</p>}
+    </section>
   );
 }
 
@@ -4148,7 +4388,7 @@ function ProfilePage({ token }: { token: string }) {
     return (
       <div className="page">
         <header className="org-header">
-          <div className="org-brand-row"><img className="org-logo" src="/icon.svg?v=2" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
+          <div className="org-brand-row"><img className="org-logo" src="/icon.svg?v=3" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
         </header>
         <h2>This profile isn&rsquo;t published.</h2>
         <p>
@@ -4183,7 +4423,7 @@ function ProfilePage({ token }: { token: string }) {
       style={{ ['--brand' as string]: profile.primary_color, ['--brand2' as string]: profile.secondary_color }}
     >
       <header className="org-header">
-        <div className="org-brand-row"><img className="org-logo" src="/icon.svg?v=2" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
+        <div className="org-brand-row"><img className="org-logo" src="/icon.svg?v=3" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
         <p className="tagline">Recruiting profile</p>
       </header>
 
@@ -4268,7 +4508,7 @@ function WatchPage({ token }: { token: string }) {
     return (
       <div className="page">
         <header className="org-header">
-          <div className="org-brand-row"><img className="org-logo" src="/icon.svg?v=2" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
+          <div className="org-brand-row"><img className="org-logo" src="/icon.svg?v=3" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
         </header>
         <h2>This game isn&rsquo;t published.</h2>
         <p>
@@ -4295,7 +4535,7 @@ function WatchPage({ token }: { token: string }) {
       style={{ ['--brand' as string]: watch.primary_color, ['--brand2' as string]: watch.secondary_color }}
     >
       <header className="org-header">
-        <div className="org-brand-row"><img className="org-logo" src="/icon.svg?v=2" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
+        <div className="org-brand-row"><img className="org-logo" src="/icon.svg?v=3" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
         <p className="tagline">Live game</p>
       </header>
 
@@ -5085,7 +5325,7 @@ function EnrollPage({ token }: { token: string }) {
     return (
       <div className="page">
         <header className="org-header">
-          <div className="org-brand-row"><img className="org-logo" src="/icon.svg?v=2" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
+          <div className="org-brand-row"><img className="org-logo" src="/icon.svg?v=3" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
         </header>
         <h2>This enrollment link isn&rsquo;t valid.</h2>
         <p>
@@ -5108,7 +5348,7 @@ function EnrollPage({ token }: { token: string }) {
     return (
       <div className="page">
         <header className="org-header">
-          <div className="org-brand-row"><img className="org-logo" src="/icon.svg?v=2" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
+          <div className="org-brand-row"><img className="org-logo" src="/icon.svg?v=3" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
           <p className="tagline">Family text alerts</p>
         </header>
         {done.optedIn ? (
@@ -5152,7 +5392,7 @@ function EnrollPage({ token }: { token: string }) {
   return (
     <div className="page">
       <header className="org-header">
-        <div className="org-brand-row"><img className="org-logo" src="/icon.svg?v=2" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
+        <div className="org-brand-row"><img className="org-logo" src="/icon.svg?v=3" alt="SimpliGame logo" /><h1>SimpliGame</h1></div>
         <p className="tagline">Family text alerts</p>
       </header>
       <h2>
