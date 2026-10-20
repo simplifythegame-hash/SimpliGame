@@ -146,19 +146,36 @@ def download_video(video_id: str, dest_dir: str) -> str:
     return os.path.join(dest_dir, files[0])
 
 
-def process_job(job: dict) -> None:
-    """Download, analyze, post results, delete the footage. Always."""
+def process_job(job: dict, video_file: str | None = None) -> None:
+    """Analyze one job: get the video, run the model, post results,
+    delete the temp footage. Always.
+
+    If video_file is given (a local file the coach downloaded from
+    YouTube Studio), it is COPIED into the temp dir and processed —
+    the original is never deleted, and no yt-dlp / YouTube download
+    happens at all. This is the fallback when yt-dlp can't download
+    (JS-runtime / visibility issues); the coach's own Studio download
+    always works.
+    """
     job_id = job["id"]
     video_id = job.get("youtube_video_id")
-    if not video_id:
+    if not video_id and not video_file:
         api_request("POST", f"/api/analysis/jobs/{job_id}/results",
                     {"status": "failed", "error": "Job has no video attached."})
         log(f"job {job_id}: failed (no video)")
         return
     tmpdir = tempfile.mkdtemp(prefix="simpligame-ai-")
     try:
-        log(f"job {job_id}: downloading video {video_id}…")
-        video_path = download_video(video_id, tmpdir)
+        if video_file:
+            if not os.path.isfile(video_file):
+                raise RuntimeError(f"Video file not found: {video_file}")
+            log(f"job {job_id}: using local video file "
+                f"{os.path.basename(video_file)}…")
+            video_path = os.path.join(tmpdir, os.path.basename(video_file))
+            shutil.copyfile(video_file, video_path)
+        else:
+            log(f"job {job_id}: downloading video {video_id}…")
+            video_path = download_video(video_id, tmpdir)
         log(f"job {job_id}: running local model…")
         candidates = run_model(video_path)
         api_request("POST", f"/api/analysis/jobs/{job_id}/results",
@@ -176,7 +193,7 @@ def process_job(job: dict) -> None:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def poll_once() -> int:
+def poll_once(video_file: str | None = None) -> int:
     """One poll cycle. Returns the number of jobs processed."""
     try:
         result = api_request("GET", "/api/analysis/jobs/pending")
@@ -185,7 +202,7 @@ def poll_once() -> int:
         return 0
     jobs = result.get("jobs", [])
     for job in jobs:
-        process_job(job)
+        process_job(job, video_file=video_file)
     return len(jobs)
 
 
@@ -194,6 +211,10 @@ def main() -> int:
     parser.add_argument("--once", action="store_true", help="one poll cycle, then exit")
     parser.add_argument("--interval", type=int, default=POLL_INTERVAL_SECONDS,
                         help="poll interval in seconds (default 60)")
+    parser.add_argument("--video-file", default=None,
+                        help="path to a local video file (downloaded from YouTube "
+                             "Studio) to process INSTEAD of downloading via yt-dlp. "
+                             "Best for --once runs; the file is copied, never deleted.")
     args = parser.parse_args()
 
     if not WORKER_KEY:
@@ -202,7 +223,7 @@ def main() -> int:
         return 2
     log(f"polling {API_URL} every {args.interval}s (Ctrl-C to stop)")
     while True:
-        poll_once()
+        poll_once(video_file=args.video_file)
         if args.once:
             return 0
         time.sleep(args.interval)
