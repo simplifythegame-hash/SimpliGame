@@ -246,6 +246,70 @@ app.get(
   }),
 );
 
+// Self-service profile update: any logged-in user edits ONLY their own
+// name/email (never anyone else's — the WHERE clause is their own id).
+// The email must stay unique within the org: the users table carries
+// UNIQUE (org_id, email), and we check first so the user gets a clear
+// error instead of a database failure. The session is untouched —
+// changing your info never signs you out.
+app.patch(
+  '/api/auth/me',
+  asyncHandler(async (req, res) => {
+    if (req.authUnavailable) {
+      res.status(503).json({ ok: false, error: AUTH_MIGRATION_MESSAGE });
+      return;
+    }
+    if (!req.auth) {
+      res.status(401).json({ ok: false, error: 'Not logged in.' });
+      return;
+    }
+    const { name, email } = req.body ?? {};
+    const cleanFullName = cleanName(name);
+    const cleanMail = cleanEmail(email);
+    if (!cleanFullName) {
+      res.status(400).json({ ok: false, error: 'Name is required (100 characters or fewer).' });
+      return;
+    }
+    if (!cleanMail) {
+      res.status(400).json({ ok: false, error: 'Enter a valid email address.' });
+      return;
+    }
+    const db = getPool();
+    try {
+      const dupe = await db.query(
+        'SELECT id FROM users WHERE org_id = $1 AND email = $2 AND id <> $3 LIMIT 1',
+        [req.auth.user.org_id, cleanMail, req.auth.user.id],
+      );
+      if (dupe.rows.length > 0) {
+        res.status(400).json({
+          ok: false,
+          error: 'That email is already used by another account in your organization.',
+        });
+        return;
+      }
+      const updated = await db.query(
+        `UPDATE users SET name = $1, email = $2 WHERE id = $3
+         RETURNING id, org_id, email, name, role, created_at`,
+        [cleanFullName, cleanMail, req.auth.user.id],
+      );
+      res.json({ ok: true, user: publicUser(updated.rows[0]) });
+    } catch (err) {
+      if (isMissingTable(err)) {
+        res.status(503).json({ ok: false, error: AUTH_MIGRATION_MESSAGE });
+        return;
+      }
+      if ((err as { code?: string }).code === '23505') {
+        res.status(400).json({
+          ok: false,
+          error: 'That email is already used by another account in your organization.',
+        });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
 // Self-service change-password: any logged-in user. Verifies the
 // current password, sets the new hash, and invalidates all of the
 // user's OTHER sessions (the current session stays alive).
