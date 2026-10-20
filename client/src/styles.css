@@ -842,6 +842,38 @@ input.wide {
   border: 0;
 }
 
+/* Imported Drive videos play in a native <video> (Range-seekable). */
+.drive-video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #000;
+}
+
+/* Chunked Drive upload progress (Highlight Builder → Import video). */
+.upload-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0.6rem 0;
+}
+
+.upload-progress {
+  flex: 1;
+  max-width: 480px;
+  height: 10px;
+  background: var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.upload-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.2s ease;
+}
+
 .yt-loading {
   position: absolute;
   inset: 0;
