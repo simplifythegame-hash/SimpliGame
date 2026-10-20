@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api';
 import type { AnalysisCandidate, AnalysisJob, AuthUser, Coach, EnrollInfo, FamilyContact, Game, GameAnalysis, GameEvent, LineupRow, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Team, Workspace } from './types';
 import YouTubePlayer from './components/YouTubePlayer';
@@ -62,6 +62,7 @@ type View =
   | { kind: 'studio'; reelId: string | null }
   | { kind: 'exports' }
   | { kind: 'review'; gameId: string; returnTo: 'live' | 'teams' | 'highlights' }
+  | { kind: 'account' }
   | { kind: 'coaches' };
 
 /**
@@ -340,7 +341,9 @@ export default function App() {
                       ? 'studio'
                       : view.kind === 'exports'
                         ? 'exports'
-                        : 'coaches';
+                        : view.kind === 'coaches'
+                          ? 'coaches'
+                          : 'account';
 
   async function handleLogout() {
     try {
@@ -403,12 +406,14 @@ export default function App() {
         )}
         <p className="tagline">SimpliGame — Simplify the Game</p>
         <p className="sub-hint">
-          Signed in as {me.name} ({me.role.replace('_', ' ')}){' '}
-          <button type="button" onClick={handleLogout}>
-            Logout
-          </button>
+          Signed in as {me.name} ({me.role.replace('_', ' ')})
         </p>
-        <ChangePasswordForm />
+        <SettingsMenu
+          role={me.role}
+          onOpenAccount={() => setView({ kind: 'account' })}
+          onOpenCoaches={() => setView({ kind: 'coaches' })}
+          onLogout={handleLogout}
+        />
       </header>
 
       {error && <p className="error">{error}</p>}
@@ -466,11 +471,6 @@ export default function App() {
             onClick={() => setView({ kind: 'exports' })}
           >
             <Icon name="exports" size={18} />Export Center
-          </button>
-        )}
-        {me.role === 'owner' && (
-          <button className={activeTab === 'coaches' ? 'selected' : ''} onClick={() => setView({ kind: 'coaches' })}>
-            <Icon name="coaches" size={18} />Coaches
           </button>
         )}
       </nav>
@@ -663,6 +663,10 @@ export default function App() {
           onBack={() => setView({ kind: view.returnTo })}
           onChanged={() => void refresh()}
         />
+      )}
+
+      {view.kind === 'account' && (
+        <AccountScreen me={me} onSaved={(user) => setMe(user)} />
       )}
 
       {view.kind === 'coaches' && me.role === 'owner' && (
@@ -2075,9 +2079,141 @@ function SetupScreen({ onDone }: { onDone: (user: AuthUser) => void }) {
   );
 }
 
-/** Owner-only coach management: add coaches with a role + team
- *  assignments, change a coach's role/teams, remove a coach. */
-/** Self-service password change, in the header account area. */
+/** Upper-right header menu (hamburger): Account / Coaches (owner only) /
+ *  Logout. Owns no account logic of its own — it relocates the controls
+ *  that used to live in the header and sidebar. Closes on outside click,
+ *  Esc, or choosing an item. */
+function SettingsMenu(props: {
+  role: ClientRole;
+  onOpenAccount: () => void;
+  onOpenCoaches: () => void;
+  onLogout: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onPointerDown(e: MouseEvent) {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false);
+    }
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open]);
+
+  function choose(action: () => void) {
+    setOpen(false);
+    action();
+  }
+
+  return (
+    <div className="settings-menu" ref={rootRef}>
+      <button
+        type="button"
+        className="settings-toggle"
+        aria-label="Settings menu"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <Icon name="menu" size={22} />
+      </button>
+      {open && (
+        <div className="settings-panel" role="menu">
+          <button type="button" role="menuitem" onClick={() => choose(props.onOpenAccount)}>
+            <Icon name="players" size={18} />Account
+          </button>
+          {props.role === 'owner' && (
+            <button type="button" role="menuitem" onClick={() => choose(props.onOpenCoaches)}>
+              <Icon name="coaches" size={18} />Coaches
+            </button>
+          )}
+          <button type="button" role="menuitem" onClick={() => choose(props.onLogout)}>
+            <Icon name="logout" size={18} />Logout
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Account screen: edit your own name/email (PATCH /api/auth/me — the
+ *  server edits only your own record and keeps the session alive), with
+ *  the self-service change-password form housed below the info form. */
+function AccountScreen({ me, onSaved }: { me: AuthUser; onSaved: (user: AuthUser) => void }) {
+  const [name, setName] = useState(me.name);
+  const [email, setEmail] = useState(me.email);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    setSuccess('');
+    setBusy(true);
+    try {
+      const user = await api.updateMe(name.trim(), email.trim());
+      onSaved(user);
+      setSuccess('Account info saved.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save account info.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <section>
+        <h2>Account</h2>
+        <p className="sub-hint">
+          Signed in as {me.name} ({me.role.replace('_', ' ')})
+        </p>
+        <form onSubmit={handleSubmit}>
+          <div className="row">
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Name"
+              required
+              maxLength={100}
+              autoComplete="name"
+            />
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="Email"
+              required
+              autoComplete="email"
+            />
+            <button type="submit" disabled={busy}>
+              {busy ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+          {error && <p className="error">{error}</p>}
+          {success && <p>{success}</p>}
+        </form>
+      </section>
+      <section>
+        <h2>Password</h2>
+        <ChangePasswordForm />
+      </section>
+    </>
+  );
+}
+
+/** Self-service password change, housed in the Account screen. */
 function ChangePasswordForm() {
   const [open, setOpen] = useState(false);
   const [current, setCurrent] = useState('');
@@ -2158,6 +2294,8 @@ function ChangePasswordForm() {
   );
 }
 
+/** Owner-only coach management: add coaches with a role + team
+ *  assignments, change a coach's role/teams, remove a coach. */
 function CoachesScreen({ teams, onBack }: { teams: { id: string; name: string }[]; onBack: () => void }) {
   const [coaches, setCoaches] = useState<Coach[]>([]);
   const [loading, setLoading] = useState(true);
