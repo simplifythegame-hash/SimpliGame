@@ -44,8 +44,12 @@ import {
   googleRedirectUri,
   initiateResumableUpload,
   isDriveConfigured,
-  refreshDriveAccessToken,
 } from './drive';
+import {
+  freshDriveAccessToken,
+  mintImportedVideoMediaUrl,
+  storageProviderOf,
+} from './storage';
 import { sendSms } from './sms';
 import { extractYouTubeVideoId } from './youtube';
 
@@ -3267,32 +3271,11 @@ function publicImportedVideo(row: Record<string, unknown>, callerId: string) {
     mime_type: (row.mime_type as string) ?? '',
     size_bytes: Number(row.size_bytes ?? 0),
     ready: row.ready === true,
+    storage_provider: storageProviderOf(row),
     owner_user_id: row.owner_user_id as string,
     mine: row.owner_user_id === callerId,
     created_at: row.created_at as string,
   };
-}
-
-/** Load a user's stored Drive refresh token. Returns null when the
- *  user never connected (or disconnected) Google Drive. */
-async function loadDriveRefreshToken(
-  db: ReturnType<typeof getPool>,
-  userId: string,
-): Promise<string | null> {
-  const row = await db.query('SELECT google_refresh_token FROM users WHERE id = $1', [userId]);
-  const token = row.rows[0]?.google_refresh_token as string | null | undefined;
-  return typeof token === 'string' && token ? token : null;
-}
-
-/** A fresh Drive access token for a user, or null when they are not
- *  connected or Google refuses the grant. */
-async function freshDriveAccessToken(
-  db: ReturnType<typeof getPool>,
-  userId: string,
-): Promise<string | null> {
-  const refreshToken = await loadDriveRefreshToken(db, userId);
-  if (!refreshToken) return null;
-  return refreshDriveAccessToken(refreshToken);
 }
 
 /** Visibility rule shared by the list and media-url: ready videos are
@@ -3594,31 +3577,20 @@ app.get(
         res.status(404).json({ ok: false, error: 'Imported video not found.' });
         return;
       }
-      if (typeof row.drive_file_id !== 'string' || !row.drive_file_id) {
-        res.status(400).json({ ok: false, error: 'This import has no Drive file yet.' });
-        return;
-      }
-      // HONEST NOTE: this URL carries the VIDEO OWNER's Drive access
-      // token, not the caller's — an imported video plays for the
-      // org's coaches through the app record, by design (the owner
-      // imported it for the team). The token is short-lived (~1 hour),
-      // scoped to drive.file (only files SimpliGame created in the
-      // owner's Drive), and the URL is minted fresh per request for a
-      // signed-in coach who can already see the video in the library.
-      // Drive supports Range requests on media downloads, so the
-      // <video> element can seek for clip cutting.
-      const ownerToken = await freshDriveAccessToken(db, row.owner_user_id as string);
-      if (!ownerToken) {
-        res.status(400).json({
-          ok: false,
-          error: 'The video owner has disconnected Google Drive — this import cannot play right now.',
-        });
+      // Playback URLs are minted by the storage seam (storage.ts),
+      // which branches on the row's storage_provider — 'drive'
+      // today, 's3' (own-box MinIO) when Phase 2 lands. See
+      // storage.ts for the honest note about owner tokens on the
+      // drive branch.
+      const minted = await mintImportedVideoMediaUrl(db, row);
+      if (!minted.ok) {
+        res.status(minted.status).json({ ok: false, error: minted.error });
         return;
       }
       res.json({
         ok: true,
-        url: `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(row.drive_file_id as string)}?alt=media&access_token=${encodeURIComponent(ownerToken)}`,
-        expiresInSeconds: 3600,
+        url: minted.url,
+        expiresInSeconds: minted.expiresInSeconds,
       });
     } catch (err) {
       if (isMissingDriveSchema(err)) {
