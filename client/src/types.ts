@@ -202,6 +202,9 @@ export interface ImportedVideo {
   mime_type: string;
   size_bytes: number;
   ready: boolean;
+  /** Where the file lives: 'drive' (uploader's Google Drive) today;
+   *  's3' (own-box MinIO) once Phase 2 lands — migration 013. */
+  storage_provider: 'drive' | 's3';
   owner_user_id: string;
   mine: boolean;
   created_at: string;
