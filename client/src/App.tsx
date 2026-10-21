@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, uploadFileToDriveSession } from './api';
-import type { AnalysisCandidate, AnalysisJob, AuthUser, Coach, EnrollInfo, FamilyContact, Game, GameAnalysis, GameEvent, GoogleStatus, ImportedVideo, LineupRow, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Team, Workspace } from './types';
+import type { AnalysisCandidate, AnalysisJob, AuthUser, Coach, EnrollInfo, FamilyContact, Game, GameAnalysis, GameEvent, GoogleStatus, ImportedVideo, LineupRow, ParentAccount, ParentHome, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Team, Workspace } from './types';
 import YouTubePlayer from './components/YouTubePlayer';
 import VideoPlaceholder from './components/VideoPlaceholder';
 import Icon, { type IconName } from './components/Icon';
@@ -70,7 +70,9 @@ type View =
  * Client-side role gating mirrors the server's permission matrix
  * (auth.ts) — it only hides/disables buttons; the server enforces
  * everything. Rank: owner (4) > head_coach (3) > assistant (2) >
- * stat_crew (1).
+ * stat_crew (1) > parent (0). Parents get a restricted shell (HOME +
+ * Account only) — every canRole(..., 'stat_crew') check is false for
+ * them, and their data comes from /api/parent/home, not the workspace.
  */
 type ClientRole = AuthUser['role'];
 const ROLE_RANK: Record<ClientRole, number> = {
@@ -78,6 +80,7 @@ const ROLE_RANK: Record<ClientRole, number> = {
   head_coach: 3,
   assistant: 2,
   stat_crew: 1,
+  parent: 0,
 };
 function canRole(role: ClientRole, min: ClientRole): boolean {
   return ROLE_RANK[role] >= ROLE_RANK[min];
@@ -312,6 +315,10 @@ export default function App() {
   if (!workspace) return <div className="page"><p className="error">{error || 'Could not load workspace.'}</p></div>;
 
   const org = workspace.organization;
+  // Parents get a restricted shell: HOME (their linked players) +
+  // Account only. Coach tabs are not rendered for them at all, and the
+  // server scopes everything they can read to their linked players.
+  const isParent = me.role === 'parent';
 
   // Sidebar active tab: detail / live-tagging screens belong to the tab
   // they were opened from (Live or Team); a profile belongs to the tab
@@ -398,8 +405,12 @@ export default function App() {
       <div className="app-layout">
       <nav className="side-nav">
         <button className={activeTab === 'home' ? 'selected' : ''} onClick={() => setView({ kind: 'home' })}><Icon name="home" size={18} />HOME</button>
-        <button className={activeTab === 'live' ? 'selected' : ''} onClick={() => setView({ kind: 'live' })}><Icon name="live" size={18} />Live</button>
-        <button className={activeTab === 'teams' ? 'selected' : ''} onClick={() => setView({ kind: 'teams' })}><Icon name="team" size={18} />Team</button>
+        {!isParent && (
+          <button className={activeTab === 'live' ? 'selected' : ''} onClick={() => setView({ kind: 'live' })}><Icon name="live" size={18} />Live</button>
+        )}
+        {!isParent && (
+          <button className={activeTab === 'teams' ? 'selected' : ''} onClick={() => setView({ kind: 'teams' })}><Icon name="team" size={18} />Team</button>
+        )}
         {canRole(me.role, 'head_coach') && (
           <button className={activeTab === 'players' ? 'selected' : ''} onClick={() => setView({ kind: 'players' })}>
             <Icon name="players" size={18} />Player Management
@@ -439,19 +450,25 @@ export default function App() {
       </nav>
 
       <main className="app-main">
-      {view.kind === 'home' && (
-        <HomeOverviewScreen
-          workspace={workspace}
-          role={me.role}
-          onOpenGame={(gameId, returnTo) => setView({ kind: 'detail', gameId, returnTo })}
-          onOpenLiveGame={(gameId, returnTo) => setView({ kind: 'liveGame', gameId, returnTo })}
-          onGoTab={(tab) => setView(tab)}
-          onSelectTeam={(teamId) => {
-            setSelectedTeamId(teamId);
-            setView({ kind: 'teams' });
-          }}
-        />
-      )}
+      {view.kind === 'home' &&
+        (isParent ? (
+          <ParentHomeScreen
+            currentUserId={me.id}
+            onOpenAccount={() => setView({ kind: 'account' })}
+          />
+        ) : (
+          <HomeOverviewScreen
+            workspace={workspace}
+            role={me.role}
+            onOpenGame={(gameId, returnTo) => setView({ kind: 'detail', gameId, returnTo })}
+            onOpenLiveGame={(gameId, returnTo) => setView({ kind: 'liveGame', gameId, returnTo })}
+            onGoTab={(tab) => setView(tab)}
+            onSelectTeam={(teamId) => {
+              setSelectedTeamId(teamId);
+              setView({ kind: 'teams' });
+            }}
+          />
+        ))}
 
       {view.kind === 'live' && (
         <LiveTabScreen
@@ -899,6 +916,165 @@ function HomeOverviewScreen(props: {
  *  live screen for that game. Wizard state lives client-side until
  *  Go Live is pressed: abandoning the wizard mid-way creates nothing.
  *  Live-now games keep a quick resume strip; finals stay listed below. */
+/** Parent HOME (role 'parent'): the restricted shell's only screen.
+ *  Everything comes from GET /api/parent/home — the server scopes it
+ *  to the parent's linked players, so this screen never touches the
+ *  coach workspace. Per player: team, recruiting profile (read-only),
+ *  stats, and the team's published games with Watch buttons (the same
+ *  public watch pages families already use). Below the players: the
+ *  parent's own Drive import section — imports must belong to a linked
+ *  player's team and land in that team's library for the coaches. */
+function ParentHomeScreen(props: {
+  currentUserId: string;
+  onOpenAccount: () => void;
+}) {
+  const [data, setData] = useState<ParentHome | null>(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api
+      .getParentHome()
+      .then(setData)
+      .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load.'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return <section><p>Loading…</p></section>;
+  if (error) return <section><p className="error">{error}</p></section>;
+  if (!data) return null;
+
+  // The import section's team picker = the distinct teams of the
+  // parent's linked players.
+  const seenTeams = new Map<string, Team>();
+  for (const p of data.players) {
+    if (!seenTeams.has(p.team_id)) {
+      seenTeams.set(p.team_id, {
+        id: p.team_id,
+        org_id: data.organization.id,
+        name: p.team_name,
+        sport: p.team_sport,
+        season: '',
+      });
+    }
+  }
+  const linkedTeams = [...seenTeams.values()];
+
+  return (
+    <>
+      <section>
+        <h2 className="btn-icon"><Icon name="home" size={22} />My Players</h2>
+        {data.players.length === 0 ? (
+          <p>
+            No players are linked to your account yet — your coach links your account to your
+            player from their profile. Let them know if this looks wrong.
+          </p>
+        ) : (
+          <p>Your linked players at {data.organization.name}.</p>
+        )}
+      </section>
+
+      {data.players.map((p) => (
+        <section key={p.id}>
+          <h3>
+            #{p.jersey_number} {p.name}
+            {p.position ? ` · ${p.position}` : ''} — {p.team_name}
+          </h3>
+
+          {p.profile ? (
+            <>
+              {p.profile.bio && <p>{p.profile.bio}</p>}
+              <ul>
+                {p.profile.height && <li>Height: {p.profile.height}</li>}
+                {p.profile.graduation_year && <li>Graduation year: {p.profile.graduation_year}</li>}
+                {p.profile.positions_text && <li>Positions: {p.profile.positions_text}</li>}
+                {p.profile.school && <li>School: {p.profile.school}</li>}
+                {p.profile.club_team && <li>Club team: {p.profile.club_team}</li>}
+              </ul>
+            </>
+          ) : (
+            <p className="sub-hint">No recruiting profile yet — the coach builds it.</p>
+          )}
+          {p.profile_public_path && (
+            <p>
+              <a href={p.profile_public_path} target="_blank" rel="noreferrer">
+                View the published recruiting profile ↗
+              </a>
+            </p>
+          )}
+
+          <h4>Stats</h4>
+          {p.stats.gamesPlayed === 0 ? (
+            <p>No recorded stats yet.</p>
+          ) : (
+            <>
+              <p>
+                {p.stats.gamesPlayed} game{p.stats.gamesPlayed === 1 ? '' : 's'} ·{' '}
+                {p.stats.totalPoints} points
+              </p>
+              <ul>
+                {Object.entries(p.stats.totals)
+                  .filter(([k]) => k !== 'Substitution')
+                  .map(([k, v]) => (
+                    <li key={k}>
+                      {k}: {v}
+                    </li>
+                  ))}
+              </ul>
+              {p.stats.highlights.length > 0 && (
+                <>
+                  <h4>Recent highlights</h4>
+                  <ul className="list">
+                    {p.stats.highlights.slice(0, 8).map((h, i) => (
+                      <li key={i}>
+                        {h.stat_type}
+                        {h.points > 0 ? ` (+${h.points})` : ''} vs {h.opponent || 'TBD'}
+                        {h.youtube_video_id
+                          ? ` · at ${Math.floor(h.video_seconds / 60)}:${String(h.video_seconds % 60).padStart(2, '0')} on the game video`
+                          : ''}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </>
+          )}
+
+          <h4>Games — {p.team_name}</h4>
+          {p.games.length === 0 ? (
+            <p>No published games yet. When the coach publishes a game, it shows up here to watch.</p>
+          ) : (
+            <ul className="list">
+              {p.games.map((g) => (
+                <li key={g.id}>
+                  {p.team_name} vs {g.opponent || 'TBD'} — {g.our_score}:{g.opponent_score}{' '}
+                  <small>
+                    {g.status === 'live' ? `● LIVE (${g.period_label})` : g.status}
+                  </small>{' '}
+                  <a href={g.watch_path} target="_blank" rel="noreferrer">
+                    <button type="button" className="btn-icon">
+                      <Icon name="eye" />
+                      {g.status === 'live' ? 'Watch live' : 'Watch'}
+                    </button>
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      ))}
+
+      <ImportVideoSection
+        role="parent"
+        teams={linkedTeams}
+        currentUserId={props.currentUserId}
+        onOpenAccount={props.onOpenAccount}
+        requireTeam
+      />
+    </>
+  );
+}
+
 function LiveTabScreen(props: {
   role: ClientRole;
   teams: Team[];
@@ -1704,6 +1880,9 @@ function ImportVideoSection(props: {
   teams: Team[];
   currentUserId: string;
   onOpenAccount: () => void;
+  /** Parents: every import must belong to one of their linked
+   *  players' teams (the server enforces it too) — no "No team". */
+  requireTeam?: boolean;
 }) {
   const [status, setStatus] = useState<GoogleStatus | null>(null);
   const [videos, setVideos] = useState<ImportedVideo[]>([]);
@@ -1733,6 +1912,14 @@ function ImportVideoSection(props: {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Parent mode: preselect the (usually single) linked team so the
+  // required team is never an extra step.
+  useEffect(() => {
+    if (props.requireTeam && !teamId && props.teams.length > 0) {
+      setTeamId(props.teams[0].id);
+    }
+  }, [props.requireTeam, props.teams, teamId]);
 
   async function handleUpload() {
     if (!file) return;
@@ -1818,14 +2005,21 @@ function ImportVideoSection(props: {
               className="wide"
             />
             <select value={teamId} onChange={(e) => setTeamId(e.target.value)}>
-              <option value="">No team</option>
+              {!props.requireTeam && <option value="">No team</option>}
+              {props.requireTeam && props.teams.length === 0 && (
+                <option value="">No linked team</option>
+              )}
               {props.teams.map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.name}
                 </option>
               ))}
             </select>
-            <button disabled={!file || uploading} onClick={handleUpload} className="btn-icon">
+            <button
+              disabled={!file || uploading || (props.requireTeam && !teamId)}
+              onClick={handleUpload}
+              className="btn-icon"
+            >
               <Icon name="export" />
               {uploading ? 'Uploading…' : 'Import video'}
             </button>
@@ -4778,7 +4972,201 @@ function PlayerProfileScreen(props: { role: ClientRole; player: Player | undefin
           )}
         </>
       )}
+
+      {canRole(props.role, 'head_coach') && <ParentsSection player={player} />}
     </section>
+  );
+}
+
+/** Parents subsection (head_coach+, on the player profile): real
+ *  parent LOGINS linked to this player (migration 012). A parent sees
+ *  only their linked players — this player's profile/stats, the team's
+ *  published games, and their own Drive imports. Create a parent
+ *  account here (name/email/initial password — share the password
+ *  out-of-band), link an existing parent account (a second kid, or
+ *  the other parent), unlink, reset a password, or delete the account
+ *  (blocked while the parent owns imported videos). */
+function ParentsSection({ player }: { player: Player }) {
+  type LinkedParent = Omit<ParentAccount, 'playerIds'>;
+  const [parents, setParents] = useState<LinkedParent[]>([]);
+  const [allParents, setAllParents] = useState<ParentAccount[]>([]);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [linkPick, setLinkPick] = useState('');
+  const [resetState, setResetState] = useState<Record<string, { next: string; confirm: string }>>({});
+
+  const load = useCallback(async () => {
+    try {
+      const [linked, all] = await Promise.all([
+        api.getPlayerParents(player.id),
+        api.listParents(),
+      ]);
+      setParents(linked);
+      setAllParents(all);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load parents.');
+    }
+  }, [player.id]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function run(action: () => Promise<unknown>) {
+    setError('');
+    setMessage('');
+    try {
+      await action();
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Something went wrong');
+    }
+  }
+
+  // Parents in the org that are NOT already linked to this player.
+  const linkable = allParents.filter((p) => !parents.some((lp) => lp.id === p.id));
+
+  return (
+    <>
+      <h3>Parents</h3>
+      <p>
+        Parent accounts are real logins. A parent sees only the players linked to them — this
+        player&apos;s profile and stats, the team&apos;s published games, and their own imported
+        videos. Share the initial password out-of-band; they can change it in their Account
+        screen.
+      </p>
+      {error && <p className="error">{error}</p>}
+      {message && <p>{message}</p>}
+      {parents.length === 0 ? (
+        <p>No parent accounts linked yet.</p>
+      ) : (
+        <ul className="list">
+          {parents.map((p) => (
+            <li key={p.id}>
+              <strong>{p.name}</strong> — {p.email}{' '}
+              <button
+                onClick={() => {
+                  if (!window.confirm(`Unlink ${p.name} from ${player.name}? They keep their account and any other linked players.`)) return;
+                  void run(() => api.unlinkParent(p.id, player.id));
+                }}
+              >
+                Unlink
+              </button>{' '}
+              <button
+                onClick={() => {
+                  if (!window.confirm(`Delete ${p.name}'s parent account (${p.email})? They will no longer be able to log in.`)) return;
+                  void run(async () => {
+                    await api.deleteParent(p.id);
+                    setMessage(`Parent account deleted for ${p.name}.`);
+                  });
+                }}
+              >
+                Delete account
+              </button>
+              <div className="row">
+                <input
+                  type="password"
+                  placeholder="New password (8+ characters)"
+                  value={resetState[p.id]?.next ?? ''}
+                  onChange={(e) =>
+                    setResetState((prev) => ({
+                      ...prev,
+                      [p.id]: { next: e.target.value, confirm: prev[p.id]?.confirm ?? '' },
+                    }))
+                  }
+                />
+                <input
+                  type="password"
+                  placeholder="Confirm new password"
+                  value={resetState[p.id]?.confirm ?? ''}
+                  onChange={(e) =>
+                    setResetState((prev) => ({
+                      ...prev,
+                      [p.id]: { next: prev[p.id]?.next ?? '', confirm: e.target.value },
+                    }))
+                  }
+                />
+                <button
+                  onClick={() => {
+                    const r = resetState[p.id];
+                    if (!r) return;
+                    if (r.next !== r.confirm) {
+                      setError('New passwords do not match.');
+                      return;
+                    }
+                    void run(async () => {
+                      await api.resetParentPassword(p.id, r.next);
+                      setResetState((prev) => {
+                        const nextState = { ...prev };
+                        delete nextState[p.id];
+                        return nextState;
+                      });
+                      setMessage(
+                        `Password reset for ${p.name}. Share the new password with them out-of-band — they will need to log in again.`,
+                      );
+                    });
+                  }}
+                >
+                  Reset password
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <h4>Add a parent account</h4>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void run(async () => {
+            await api.createParent({ name, email, password, player_id: player.id });
+            setName('');
+            setEmail('');
+            setPassword('');
+            setMessage('Parent account created and linked to this player.');
+          });
+        }}
+      >
+        <div className="row">
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Parent name" required maxLength={100} />
+          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" required />
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Initial password (8+ characters)" required />
+          <button type="submit">Create + link</button>
+        </div>
+      </form>
+
+      {linkable.length > 0 && (
+        <>
+          <h4>Link an existing parent</h4>
+          <div className="row">
+            <select value={linkPick} onChange={(e) => setLinkPick(e.target.value)}>
+              <option value="">Choose a parent…</option>
+              {linkable.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} — {p.email}
+                </option>
+              ))}
+            </select>
+            <button
+              disabled={!linkPick}
+              onClick={() => {
+                void run(async () => {
+                  await api.linkParent(linkPick, player.id);
+                  setLinkPick('');
+                  setMessage('Parent linked to this player.');
+                });
+              }}
+            >
+              Link to this player
+            </button>
+          </div>
+        </>
+      )}
+    </>
   );
 }
 
