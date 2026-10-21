@@ -197,6 +197,50 @@ No env vars needed. First run migration 009, then restart.
    exist. Then recreate the owner account and re-add any coaches.
    Keep a written-down password in a safe place to avoid this.
 
+## Parent accounts
+
+No env vars needed. First run migration 012, then restart. (Drive
+import for parents also needs migration 011 — see below.)
+
+Parents get **real logins** (the owner chose this over token links).
+A parent is a user with role `parent`, linked to one or more players
+via `parent_players` — their kids.
+
+1. **Create/link (head coach+):** open the player in **Player
+   Management** → the profile's **Parents** section. Create a parent
+   account (name, email, initial password 8+ characters — share it
+   out-of-band; they change it in their Account screen), link an
+   existing parent account to another player (a second kid / the
+   other parent), unlink, reset a password, or delete the account.
+   Team scoping applies: a head coach manages parents of players on
+   their assigned teams; the owner manages every parent. Deleting a
+   parent account is **blocked while the parent owns imported
+   videos** — delete their imports from the Highlight Builder library
+   first (the files live in the parent's own Drive and the library
+   rows point at their connection).
+2. **What a parent sees:** a restricted shell — sidebar **HOME**
+   only, plus the ☰ menu's Account / Logout (no Phone Numbers, no
+   Coaches, no coach tabs). Parent HOME (`GET /api/parent/home`,
+   scoped server-side to their linked players) shows per player: the
+   team, the recruiting profile (bio/measurables + aggregated stats +
+   highlights, read-only), a link to the published public profile
+   when one exists, and the team's **published** games with Watch
+   buttons (the regular public watch pages).
+3. **Drive import:** a parent connects their own Google Drive in
+   their Account screen (same per-user flow as coaches) and imports
+   video from their HOME — **only for a team one of their linked
+   players plays on** (enforced server-side; anything else is a
+   404). The import lands in that team's library, owned by the
+   parent, where coaches use it in Highlight Builder / Reel Studio
+   like any import. Parents see and can delete only their own
+   imports.
+4. **Permissions:** `parent` ranks below `stat_crew` in the matrix,
+   so the parent holds **none** of the coach actions — no stat
+   tagging, roster edits, exports, reels, family-notify, or account
+   management; every coach endpoint 403s/404s for them server-side.
+   Parent accounts never appear in the owner's Coaches screen; the
+   coach endpoints refuse to edit/delete/reset a parent target.
+
 ## Google Sheets export (service account)
 
 Game exports build a real Google Sheet via a service account — no
