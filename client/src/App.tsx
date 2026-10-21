@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, uploadFileToDriveSession } from './api';
-import type { AnalysisCandidate, AnalysisJob, AuthUser, Coach, EnrollInfo, FamilyContact, Game, GameAnalysis, GameEvent, GoogleStatus, ImportedVideo, LineupRow, ParentAccount, ParentHome, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Team, Workspace } from './types';
+import type { AnalysisCandidate, AnalysisJob, AuthUser, Coach, EnrollInfo, FamilyContact, Game, GameAnalysis, GameEvent, GoogleStatus, ImportedVideo, LineupRow, Organization, ParentAccount, ParentHome, Player, PlayerProfile, PlayerProfileStats, PublicProfile, PublicWatch, ReelClip, ReelProject, SheetExport, SmsLogRow, Team, Workspace } from './types';
 import YouTubePlayer from './components/YouTubePlayer';
 import VideoPlaceholder from './components/VideoPlaceholder';
 import Icon, { type IconName } from './components/Icon';
@@ -132,7 +132,6 @@ export default function App() {
   const [needsSetup, setNeedsSetup] = useState(false);
   const [authError, setAuthError] = useState('');
 
-  const [teamName, setTeamName] = useState('');
   const [playerName, setPlayerName] = useState('');
   const [playerJersey, setPlayerJersey] = useState('');
   const [playerPosition, setPlayerPosition] = useState('');
@@ -219,13 +218,30 @@ export default function App() {
     }
   }
 
-  async function handleCreateTeam(e: React.FormEvent) {
-    e.preventDefault();
-    await run(async () => {
-      const team = await api.createTeam(teamName, 'Volleyball', '');
-      setTeamName('');
-      setSelectedTeamId(team.id);
-    });
+  // Create-team flow (Team tab): create the team, then add the
+  // starting roster one player at a time via the existing endpoints.
+  // A player add that fails does NOT undo the team — the failed names
+  // come back so the Team tab can say exactly who still needs adding
+  // (partial success, never a silent half-roster).
+  async function handleCreateTeamWithRoster(
+    name: string,
+    sport: string,
+    newPlayers: { name: string; jersey_number: string; position: string }[],
+  ): Promise<{ failedPlayers: string[] }> {
+    const team = await api.createTeam(name, sport, '');
+    const failedPlayers: string[] = [];
+    for (const p of newPlayers) {
+      try {
+        await api.addPlayer(team.id, p.name, p.jersey_number, p.position);
+      } catch {
+        failedPlayers.push(p.name);
+      }
+    }
+    setSelectedTeamId(team.id);
+    // A refresh failure here must not read as "team creation failed"
+    // — the team exists; the next load catches up.
+    await refresh().catch(() => {});
+    return { failedPlayers };
   }
 
   async function handleAddPlayer(e: React.FormEvent) {
@@ -565,14 +581,13 @@ export default function App() {
       {view.kind === 'teams' && (
         <TeamsTabScreen
           role={me.role}
+          organization={workspace.organization}
           teams={workspace.teams}
           players={workspace.players}
           games={workspace.games}
           selectedTeamId={selectedTeamId}
           onSelectTeam={setSelectedTeamId}
-          teamName={teamName}
-          onTeamNameChange={setTeamName}
-          onCreateTeam={handleCreateTeam}
+          onCreateTeamWithRoster={handleCreateTeamWithRoster}
           playerName={playerName}
           onPlayerNameChange={setPlayerName}
           playerJersey={playerJersey}
@@ -1597,16 +1612,26 @@ function LiveTabScreen(props: {
 /** Team tab: holds ALL rosters — team list, per-team roster
  *  management, and that team's games. Roster edits stay head_coach+
  *  (server enforces; the client only hides the forms). */
+/** One player row in the create-team form (Team tab). Rows with a
+ *  blank name are skipped on save — the team can be created empty
+ *  and filled in later from the roster's own add-player form. */
+type DraftPlayer = { name: string; jersey: string; position: string };
+
+const EMPTY_DRAFT_PLAYER: DraftPlayer = { name: '', jersey: '', position: '' };
+
 function TeamsTabScreen(props: {
   role: ClientRole;
+  organization: Organization;
   teams: Team[];
   players: Player[];
   games: Game[];
   selectedTeamId: string;
   onSelectTeam: (id: string) => void;
-  teamName: string;
-  onTeamNameChange: (v: string) => void;
-  onCreateTeam: (e: React.FormEvent) => void;
+  onCreateTeamWithRoster: (
+    name: string,
+    sport: string,
+    newPlayers: { name: string; jersey_number: string; position: string }[],
+  ) => Promise<{ failedPlayers: string[] }>;
   playerName: string;
   onPlayerNameChange: (v: string) => void;
   playerJersey: string;
@@ -1618,37 +1643,243 @@ function TeamsTabScreen(props: {
   onOpenLiveGame: (gameId: string) => void;
   onOpenDetail: (gameId: string) => void;
 }) {
+  // --- Create-team flow (owner only): an in-tab view that replaces
+  // the browse view. Nothing reaches the server until "Create Team"
+  // is pressed, so Cancel leaves nothing behind. ---
+  const [creating, setCreating] = useState(false);
+  const [newTeamName, setNewTeamName] = useState('');
+  const [newTeamSport, setNewTeamSport] = useState('Volleyball');
+  const [draftPlayers, setDraftPlayers] = useState<DraftPlayer[]>([{ ...EMPTY_DRAFT_PLAYER }]);
+  const [createBusy, setCreateBusy] = useState(false);
+  const [createError, setCreateError] = useState('');
+  // Outcome of the last create, shown above the strip back in browse
+  // mode: plain success, or partial success naming the players whose
+  // adds failed (the team itself was created either way).
+  const [notice, setNotice] = useState('');
+  const [noticePartial, setNoticePartial] = useState(false);
+
   const selectedTeam = props.teams.find((t) => t.id === props.selectedTeamId);
   const roster = props.players.filter((p) => p.team_id === props.selectedTeamId);
   const teamGames = props.games.filter((g) => g.team_id === props.selectedTeamId);
   const teamName = (teamId: string) => props.teams.find((t) => t.id === teamId)?.name ?? 'Team';
+  const playerCount = (teamId: string) => props.players.filter((p) => p.team_id === teamId).length;
+  // Same initials-tile treatment as HOME's team cards: the org's
+  // brand gradient behind the team's initials.
+  const initials = (name: string) =>
+    name
+      .trim()
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((w) => w[0]?.toUpperCase() ?? '')
+      .join('') || '?';
+  const brandTileStyle = {
+    background: `linear-gradient(135deg, ${props.organization.primary_color}, ${props.organization.secondary_color})`,
+  };
+
+  function resetDraft() {
+    setNewTeamName('');
+    setNewTeamSport('Volleyball');
+    setDraftPlayers([{ ...EMPTY_DRAFT_PLAYER }]);
+    setCreateError('');
+  }
+
+  function openCreate() {
+    resetDraft();
+    setNotice('');
+    setCreating(true);
+  }
+
+  function cancelCreate() {
+    resetDraft();
+    setCreating(false);
+  }
+
+  function updateDraftPlayer(index: number, patch: Partial<DraftPlayer>) {
+    setDraftPlayers((prev) => prev.map((p, i) => (i === index ? { ...p, ...patch } : p)));
+  }
+
+  async function submitCreate(e: React.FormEvent) {
+    e.preventDefault();
+    const name = newTeamName.trim();
+    if (!name || createBusy) return;
+    // Only rows with a name are included; blank rows are ignored and
+    // zero players is fine (the roster can be filled in later).
+    const included = draftPlayers
+      .map((p) => ({
+        name: p.name.trim(),
+        jersey_number: p.jersey.trim(),
+        position: p.position.trim(),
+      }))
+      .filter((p) => p.name !== '');
+    setCreateBusy(true);
+    setCreateError('');
+    try {
+      const { failedPlayers } = await props.onCreateTeamWithRoster(
+        name,
+        newTeamSport.trim() || 'Volleyball',
+        included,
+      );
+      // The App handler has already selected the new team — land on it.
+      resetDraft();
+      setCreating(false);
+      if (failedPlayers.length > 0) {
+        setNoticePartial(true);
+        setNotice(
+          `Team "${name}" was created, but these players could not be added: ${failedPlayers.join(', ')}. You can add them from the roster below.`,
+        );
+      } else {
+        setNoticePartial(false);
+        setNotice(
+          included.length > 0
+            ? `Team "${name}" created with ${included.length} player${included.length === 1 ? '' : 's'}.`
+            : `Team "${name}" created.`,
+        );
+      }
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : 'Could not create the team.');
+    } finally {
+      setCreateBusy(false);
+    }
+  }
+
+  if (creating) {
+    return (
+      <section>
+        <h2 className="btn-icon">
+          <Icon name="team" size={22} />
+          Create team
+        </h2>
+        <form onSubmit={submitCreate} className="create-team-form">
+          <label className="field-label">
+            Team name
+            <input
+              value={newTeamName}
+              onChange={(e) => setNewTeamName(e.target.value)}
+              placeholder="e.g. Llamas 14U"
+              required
+              autoFocus
+            />
+          </label>
+          <label className="field-label">
+            Sport
+            <input
+              value={newTeamSport}
+              onChange={(e) => setNewTeamSport(e.target.value)}
+              placeholder="Volleyball"
+            />
+          </label>
+
+          <h3>Players</h3>
+          <p className="sub-hint">
+            Optional — add the starting roster now, or leave the rows blank and add
+            players later from the Team tab.
+          </p>
+          {draftPlayers.map((p, i) => (
+            <div className="row draft-player-row" key={i}>
+              <input
+                className="draft-name"
+                value={p.name}
+                onChange={(e) => updateDraftPlayer(i, { name: e.target.value })}
+                placeholder="Player name"
+                aria-label="Player name"
+              />
+              <input
+                className="draft-jersey"
+                value={p.jersey}
+                onChange={(e) => updateDraftPlayer(i, { jersey: e.target.value })}
+                placeholder="#"
+                aria-label="Jersey number"
+              />
+              <input
+                className="draft-position"
+                value={p.position}
+                onChange={(e) => updateDraftPlayer(i, { position: e.target.value })}
+                placeholder="Position"
+                aria-label="Position"
+              />
+              <button
+                type="button"
+                className="btn-icon"
+                onClick={() => setDraftPlayers((prev) => prev.filter((_, j) => j !== i))}
+                aria-label="Remove this player row"
+                title="Remove this player row"
+              >
+                <Icon name="x" />
+              </button>
+            </div>
+          ))}
+          <div className="row">
+            <button
+              type="button"
+              className="btn-icon"
+              onClick={() => setDraftPlayers((prev) => [...prev, { ...EMPTY_DRAFT_PLAYER }])}
+            >
+              <Icon name="plus" />
+              Add another player
+            </button>
+          </div>
+
+          {createError && <p className="error">{createError}</p>}
+          <div className="row wizard-actions">
+            <button
+              type="submit"
+              disabled={createBusy || !newTeamName.trim()}
+              className="btn-icon"
+            >
+              <Icon name="check" />
+              {createBusy ? 'Creating…' : 'Create Team'}
+            </button>
+            <button type="button" onClick={cancelCreate} disabled={createBusy}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      </section>
+    );
+  }
+
   return (
     <>
       <section>
         <h2>Teams</h2>
-        {props.role === 'owner' && (
-          <form onSubmit={props.onCreateTeam} className="row">
-            <input
-              value={props.teamName}
-              onChange={(e) => props.onTeamNameChange(e.target.value)}
-              placeholder="New team name"
-              required
-            />
-            <button type="submit">Create team</button>
-          </form>
-        )}
-        <ul className="list">
-          {props.teams.map((t) => (
-            <li key={t.id}>
+        {notice && <p className={noticePartial ? 'mock-note' : 'notice-ok'}>{notice}</p>}
+        <div className="team-strip-wrap">
+          <div className="team-strip">
+            {props.teams.map((t) => (
               <button
-                className={t.id === props.selectedTeamId ? 'selected' : ''}
-                onClick={() => props.onSelectTeam(t.id)}
+                key={t.id}
+                className={`team-card team-strip-card${t.id === props.selectedTeamId ? ' selected' : ''}`}
+                onClick={() => {
+                  setNotice('');
+                  props.onSelectTeam(t.id);
+                }}
               >
-                {t.name} ({t.sport})
+                <span className="team-card-tile" style={brandTileStyle} aria-hidden="true">
+                  {initials(t.name)}
+                </span>
+                <span className="team-card-text">
+                  <strong>{t.name}</strong>
+                  <small>
+                    {t.sport} · {playerCount(t.id)} player{playerCount(t.id) === 1 ? '' : 's'}
+                  </small>
+                </span>
               </button>
-            </li>
-          ))}
-        </ul>
+            ))}
+            {props.teams.length === 0 && (
+              <p className="sub-hint team-strip-empty">
+                {props.role === 'owner'
+                  ? 'No teams yet — create your first one.'
+                  : 'No teams assigned to you yet.'}
+              </p>
+            )}
+          </div>
+          {props.role === 'owner' && (
+            <button className="team-strip-create btn-icon" onClick={openCreate}>
+              <Icon name="plus" />
+              Create Team
+            </button>
+          )}
+        </div>
       </section>
 
       {selectedTeam && (
