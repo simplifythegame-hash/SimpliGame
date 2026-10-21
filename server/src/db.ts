@@ -3,12 +3,64 @@ import { Pool } from 'pg';
 /**
  * Shared Postgres connection pool.
  *
- * DATABASE_URL comes from the environment (Neon in production, local
- * Postgres or Neon in dev). Neon requires SSL; `ssl: { rejectUnauthorized:
- * false }` is the standard Neon-compatible setting for pooled clients.
- * The pool is created lazily on first query so importing this module never
- * crashes a process that has no database configured yet.
+ * DATABASE_URL comes from the environment (Neon in production today;
+ * a plain Postgres on the owner's own box later). The pool is created
+ * lazily on first query so importing this module never crashes a
+ * process that has no database configured yet.
+ *
+ * SSL RULE (box-readiness — do not simplify this away):
+ * Hosted Postgres (Neon, today's production) REQUIRES SSL, and the
+ * current Render deploy must keep working untouched, so SSL stays ON
+ * by default. It is turned OFF only when the target is provably
+ * local:
+ *   1. `PGSSL=disable` in the environment forces SSL off;
+ *      `PGSSL=require` forces it on. (Explicit operator override.)
+ *   2. An `sslmode` in DATABASE_URL wins next: require / verify-ca /
+ *      verify-full → SSL on; disable → SSL off. (Neon's connection
+ *      strings carry sslmode=require, so production takes this path
+ *      and is unchanged.)
+ *   3. Otherwise the hostname decides: localhost / loopback IPs and
+ *      single-label hostnames (no dot — Docker Compose service names
+ *      like `db`, which can never be a public hosted endpoint) get a
+ *      plain connection. Every dotted hostname (e.g. a Neon
+ *      `*.aws.neon.tech` host) gets SSL.
+ *   4. An unparseable DATABASE_URL falls back to SSL ON — today's
+ *      behavior — so a surprise can never silently downgrade the
+ *      production connection to plaintext.
+ * When SSL is on, `rejectUnauthorized: false` is kept: it is the
+ * standard Neon-compatible setting for pooled clients (Neon presents
+ * a publicly trusted chain, but poolers/proxies vary).
  */
+type PgSslConfig = { rejectUnauthorized: false } | false;
+
+export function sslConfigForConnectionString(connectionString: string): PgSslConfig {
+  const pgssl = (process.env.PGSSL ?? '').trim().toLowerCase();
+  if (pgssl === 'require') return { rejectUnauthorized: false };
+  if (pgssl === 'disable' || pgssl === 'off' || pgssl === 'false') return false;
+
+  let url: URL;
+  try {
+    url = new URL(connectionString);
+  } catch {
+    return { rejectUnauthorized: false };
+  }
+
+  const sslmode = (url.searchParams.get('sslmode') ?? '').trim().toLowerCase();
+  if (sslmode === 'require' || sslmode === 'verify-ca' || sslmode === 'verify-full') {
+    return { rejectUnauthorized: false };
+  }
+  if (sslmode === 'disable') return false;
+
+  const host = url.hostname.toLowerCase();
+  const isLocal =
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    host === '::1' ||
+    host === '[::1]' ||
+    !host.includes('.');
+  return isLocal ? false : { rejectUnauthorized: false };
+}
+
 let pool: Pool | null = null;
 
 export function getPool(): Pool {
@@ -20,7 +72,7 @@ export function getPool(): Pool {
     pool = new Pool({
       connectionString,
       max: 10,
-      ssl: { rejectUnauthorized: false },
+      ssl: sslConfigForConnectionString(connectionString),
     });
     pool.on('error', (err) => {
       // A pool error must never take the server down silently; log it loudly.
