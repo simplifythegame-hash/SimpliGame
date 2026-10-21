@@ -11,12 +11,16 @@ import { getPool } from './db';
  * hashes, delivered as an HttpOnly SameSite=Lax cookie, 30-day expiry.
  *
  * Roles: owner (sees all teams, manages coaches), head_coach /
- * assistant / stat_crew (see only their assigned teams). Team scoping
- * is enforced server-side in every handler — the client only renders
+ * assistant / stat_crew (see only their assigned teams), and parent
+ * (migration 012 — a real login linked to one or more players via
+ * parent_players; sees ONLY their linked players and their own Drive
+ * imports, and holds NONE of the coach permissions — the role ranks
+ * below stat_crew, so every coach action 403s). Team scoping is
+ * enforced server-side in every handler — the client only renders
  * what the server returns.
  */
 
-export type CoachRole = 'owner' | 'head_coach' | 'assistant' | 'stat_crew';
+export type CoachRole = 'owner' | 'head_coach' | 'assistant' | 'stat_crew' | 'parent';
 export type NonOwnerRole = 'head_coach' | 'assistant' | 'stat_crew';
 
 export const NON_OWNER_ROLES: NonOwnerRole[] = ['head_coach', 'assistant', 'stat_crew'];
@@ -220,18 +224,21 @@ export function requireOwner(
  * Per-role write permissions. One helper for every write endpoint —
  * handlers never write their own ad-hoc role checks.
  *
- * Rank: owner (4) > head_coach (3) > assistant (2) > stat_crew (1).
- * Each action names the minimum role that may perform it; higher roles
- * inherit it. Team scoping is separate (canAccessTeam / getOrgGame):
- * the role check runs first (403), then the team check (404 for an
- * unassigned team). A 403 never reveals whether the resource exists,
- * because it is returned without looking the resource up.
+ * Rank: owner (4) > head_coach (3) > assistant (2) > stat_crew (1) >
+ * parent (0). Each action names the minimum role that may perform it;
+ * higher roles inherit it. Team scoping is separate (canAccessTeam /
+ * getOrgGame): the role check runs first (403), then the team check
+ * (404 for an unassigned team). A 403 never reveals whether the
+ * resource exists, because it is returned without looking the
+ * resource up.
  *
+ * - parent: NO coach actions. Parent reads go through the dedicated
+ *   /api/parent/* endpoints, scoped to their linked players.
  * - stat_crew: tag stats + undo + view only.
  * - assistant: + subs, Go Live / End Game, analysis verify/unverify.
  * - head_coach: + game creation, roster changes, publish/unpublish,
  *   exports, profile edits, reels, family-notify sends, YouTube attach,
- *   enroll-token generation, family-contact removal.
+ *   enroll-token generation, family-contact removal, parent management.
  * - owner: everything, + coach management, org rename, team creation.
  */
 export type PermissionAction =
@@ -249,6 +256,7 @@ export type PermissionAction =
   | 'youtube'
   | 'enroll'
   | 'family_manage'
+  | 'parent_manage'
   | 'coach_manage'
   | 'org'
   | 'team_create';
@@ -258,6 +266,7 @@ const ROLE_RANK: Record<CoachRole, number> = {
   head_coach: 3,
   assistant: 2,
   stat_crew: 1,
+  parent: 0,
 };
 
 const MIN_ROLE: Record<PermissionAction, CoachRole> = {
@@ -275,6 +284,7 @@ const MIN_ROLE: Record<PermissionAction, CoachRole> = {
   youtube: 'head_coach',
   enroll: 'head_coach',
   family_manage: 'head_coach',
+  parent_manage: 'head_coach',
   coach_manage: 'owner',
   org: 'owner',
   team_create: 'owner',
