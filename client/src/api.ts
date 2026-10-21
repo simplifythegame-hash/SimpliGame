@@ -572,6 +572,69 @@ export const api = {
     );
   },
 
+  // ------------------------------------------- parent accounts (012)
+  // Real parent logins: head coaches create/link them from a player's
+  // profile; the parent's own reads come from /api/parent/home, scoped
+  // server-side to their linked players.
+  /** Parents visible to the caller, each with linked player IDs. */
+  async listParents() {
+    const data = await parseJson(await fetch('/api/parents'));
+    return data.parents as import('./types').ParentAccount[];
+  },
+
+  /** Parents linked to one player (name + email only). */
+  async getPlayerParents(playerId: string) {
+    const data = await parseJson(await fetch(`/api/players/${playerId}/parents`));
+    return data.parents as Array<Omit<import('./types').ParentAccount, 'playerIds'>>;
+  },
+
+  /** Create a parent account and link it to a player in one step. */
+  async createParent(body: { name: string; email: string; password: string; player_id: string }) {
+    const data = await parseJson(
+      await fetch('/api/parents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    );
+    return data.parent as import('./types').ParentAccount;
+  },
+
+  async linkParent(parentId: string, playerId: string) {
+    await parseJson(
+      await fetch(`/api/parents/${parentId}/link`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ player_id: playerId }),
+      }),
+    );
+  },
+
+  async unlinkParent(parentId: string, playerId: string) {
+    await parseJson(await fetch(`/api/parents/${parentId}/link/${playerId}`, { method: 'DELETE' }));
+  },
+
+  async deleteParent(parentId: string) {
+    await parseJson(await fetch(`/api/parents/${parentId}`, { method: 'DELETE' }));
+  },
+
+  /** Head-coach reset for a managed parent + invalidate their sessions. */
+  async resetParentPassword(parentId: string, newPassword: string) {
+    await parseJson(
+      await fetch(`/api/parents/${parentId}/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newPassword }),
+      }),
+    );
+  },
+
+  /** The signed-in parent's HOME payload (linked players only). */
+  async getParentHome() {
+    const data = await parseJson(await fetch('/api/parent/home'));
+    return data as import('./types').ParentHome;
+  },
+
   // ------------------------------------------- Google Drive import
   // Per-user Drive: imported videos live in the coach's OWN Drive
   // (drive.file scope). Connect is a full-page navigation to
