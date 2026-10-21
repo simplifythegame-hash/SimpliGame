@@ -309,9 +309,10 @@ export interface PublicProfile {
   secondary_color: string;
 }
 
-/** Logged-in user: owner sees all teams; coaches see assigned teams.
- *  Never includes a password hash. */
-export type CoachRole = 'owner' | 'head_coach' | 'assistant' | 'stat_crew';
+/** Logged-in user: owner sees all teams; coaches see assigned teams;
+ *  parents (migration 012) see only their linked players. Never
+ *  includes a password hash. */
+export type CoachRole = 'owner' | 'head_coach' | 'assistant' | 'stat_crew' | 'parent';
 
 export interface AuthUser {
   id: string;
@@ -325,4 +326,56 @@ export interface AuthUser {
 /** A coach account (owner-only view): role + assigned team IDs. */
 export interface Coach extends AuthUser {
   teamIds: string[];
+}
+
+/** A parent account (head_coach+ management view): the login plus the
+ *  IDs of the players they are linked to (their kids). */
+export interface ParentAccount {
+  id: string;
+  org_id: string;
+  email: string;
+  name: string;
+  role: 'parent';
+  created_at: string | null;
+  playerIds: string[];
+}
+
+/** Parent HOME payload (GET /api/parent/home): one entry per linked
+ *  player — the player, their team, their recruiting profile (null
+ *  until a coach creates one), aggregated stats, and the team's
+ *  published games with public watch paths. Scoped server-side to the
+ *  parent's linked players only. */
+export interface ParentHomePlayer {
+  id: string;
+  name: string;
+  jersey_number: string;
+  position: string;
+  team_id: string;
+  team_name: string;
+  team_sport: string;
+  profile: {
+    bio: string;
+    height: string;
+    graduation_year: string;
+    positions_text: string;
+    school: string;
+    club_team: string;
+  } | null;
+  profile_public_path: string | null;
+  stats: PlayerProfileStats;
+  games: {
+    id: string;
+    opponent: string;
+    status: string;
+    our_score: number;
+    opponent_score: number;
+    period_label: string;
+    created_at: string;
+    watch_path: string;
+  }[];
+}
+
+export interface ParentHome {
+  organization: Organization;
+  players: ParentHomePlayer[];
 }
