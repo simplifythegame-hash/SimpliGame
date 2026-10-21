@@ -239,6 +239,83 @@ a {
   color: var(--muted);
 }
 
+/* ---- Team tab: horizontal roster strip ---- */
+
+/* Team cards scroll sideways; the Create Team action stays pinned at
+   the row's right end, outside the scroll area (owner only — team
+   creation is owner-only, same as before). */
+.team-strip-wrap {
+  display: flex;
+  gap: 0.75rem;
+  align-items: stretch;
+  margin-top: 0.5rem;
+}
+
+.team-strip {
+  display: flex;
+  gap: 0.75rem;
+  overflow-x: auto;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-bottom: 0.4rem;
+}
+
+.team-strip-card {
+  flex: 0 0 auto;
+}
+
+/* Selected strip card: keep the white card and org-color tile
+   readable — a brand ring instead of the solid .selected fill. */
+.team-strip-card.selected {
+  background: var(--surface);
+  color: var(--ink);
+  border-color: var(--brand, #0A1F44);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand, #0A1F44) 30%, transparent);
+}
+
+.team-strip-create {
+  flex: 0 0 auto;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  padding: 0.75rem 1.1rem;
+  border-radius: var(--radius);
+  box-shadow: 0 2px 8px rgba(255, 107, 26, 0.4);
+}
+
+.team-strip-create:hover:not(:disabled) {
+  background: var(--accent-dark);
+  border-color: var(--accent-dark);
+}
+
+.team-strip-empty {
+  align-self: center;
+  margin: 0;
+}
+
+/* ---- Team tab: create-team form ---- */
+
+.create-team-form .field-label {
+  margin: 0.5rem 0;
+  max-width: 420px;
+}
+
+/* One draft roster row: name grows, jersey stays compact, position
+   takes what's left; the row wraps on narrow screens via .row. */
+.draft-player-row .draft-name {
+  flex: 1 1 170px;
+}
+
+.draft-player-row .draft-jersey {
+  flex: 0 0 4.5rem;
+  width: 4.5rem;
+}
+
+.draft-player-row .draft-position {
+  flex: 1 1 120px;
+}
+
 /* ---- Manual stat mode toggle (Live screen, below the video) ---- */
 
 .manual-stats-toggle {
@@ -592,6 +669,16 @@ input.wide {
 .mock-note {
   background: #fff8e1;
   border: 1px solid #e6c200;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-sm);
+}
+
+/* Positive outcome note (e.g. create-team success on the Team tab),
+   the green counterpart to .error / .mock-note. */
+.notice-ok {
+  background: #e8f5e9;
+  color: #1e5b24;
+  border: 1px solid #bfe3c4;
   padding: 0.75rem 1rem;
   border-radius: var(--radius-sm);
 }
