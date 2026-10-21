@@ -13,6 +13,9 @@ simpligame/
   migrations/    Plain SQL schema (Neon-compatible)
   worker/        Python local worker — AI Vision Phase 1 (owner's own machine)
   render.yaml    Render blueprint (free web service)
+  Dockerfile     Production app image (own-box deployment)
+  docker-compose.yml  App + Postgres + MinIO for the owner's mini-PC
+  docs/          Transfer + operations checklists
 ```
 
 ## Run locally
@@ -45,6 +48,28 @@ npm run dev --workspace=@simpligame/client   # http://localhost:5173
    (001, then 002, …), then restart the service. New migrations are applied
    the same way: paste the SQL into the Neon SQL Editor, run it, restart.
 5. Your URL: `https://simpligame.onrender.com` (or whatever Render assigns).
+
+## Box-ready (own mini-PC)
+
+The app is packaged to move onto the owner's own Linux box without a
+rebuild — see **docs/mini-pc-transfer.md** for the transfer-day
+checklist. `docker-compose.yml` runs the app (Dockerfile, same
+build/run shape as Render), Postgres (replacing Neon), and MinIO
+(S3-compatible storage, running but not yet used by the app).
+`server/src/db.ts` connects to Postgres WITH SSL for hosted
+databases (Neon — production behavior unchanged) and WITHOUT SSL for
+localhost / compose service names; `PGSSL=require|disable` overrides.
+
+Two data seams landed with migration 013 (no behavior change):
+
+- **Storage seam:** `imported_videos.storage_provider` (`drive`
+  today, `s3` later) + `storage_key`, and playback URLs are minted
+  only in `server/src/storage.ts`, branching on the provider.
+- **Render-job queue:** `render_jobs` defines an export/render job
+  as data — `payload` JSONB holds the clip list (sources + in/out
+  points + overlays) in an engine-agnostic shape; browser, Dell
+  worker, box worker, or a future renderer all consume the same
+  payload. Schema only — no endpoints or UI yet (Phase 3).
 
 ## Free-tier notes
 
