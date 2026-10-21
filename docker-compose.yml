@@ -1,0 +1,80 @@
+# SimpliGame on the owner's own box (mini-PC day).
+#
+#   cp .env.box.example .env   # fill in the secrets
+#   docker compose up -d --build
+#
+# Full transfer checklist: docs/mini-pc-transfer.md
+#
+# Three services: the app, Postgres (replaces Neon), and MinIO
+# (S3-compatible storage — running so the box is complete; the app
+# does NOT use it yet, that's Phase 2 of the independence roadmap).
+# Nothing here publishes a port to the LAN/public except through the
+# tunnel the owner sets up against 127.0.0.1:4000.
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: simpligame
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env (copy .env.box.example first)}
+      POSTGRES_DB: simpligame
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      # The app service waits for this (depends_on: service_healthy).
+      test: ["CMD-SHELL", "pg_isready -U simpligame -d simpligame"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    # No port published: the app reaches Postgres over the internal
+    # compose network. Administer with:
+    #   docker compose exec db psql -U simpligame -d simpligame
+
+  minio:
+    image: minio/minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env (copy .env.box.example first)}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env (copy .env.box.example first)}
+    volumes:
+      - minio_data:/data
+    ports:
+      # API on the box's localhost ONLY — for the owner's own tools.
+      # (The app's future s3 traffic uses the internal network name
+      # http://minio:9000 and needs no published port at all.)
+      - "127.0.0.1:9000:9000"
+      # The MinIO console (container port 9001) is intentionally NOT
+      # published anywhere — see docs/mini-pc-transfer.md if you ever
+      # need it on transfer day.
+    # No healthcheck: nothing waits on MinIO yet.
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "4000"
+      # On the box the app ALWAYS talks to the compose Postgres,
+      # even if a copied-over .env still carries the old Neon
+      # DATABASE_URL (environment: beats env_file: in compose).
+      DATABASE_URL: postgres://simpligame:${POSTGRES_PASSWORD}@db:5432/simpligame
+    ports:
+      # Localhost only. Public traffic arrives via the tunnel
+      # (Tailscale Funnel / Cloudflare Tunnel) pointed at
+      # 127.0.0.1:4000. Change to "4000:4000" only if you
+      # deliberately want the app reachable on the home LAN.
+      - "127.0.0.1:4000:4000"
+
+volumes:
+  db_data:
+  minio_data:
