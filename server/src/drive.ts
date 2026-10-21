@@ -202,7 +202,16 @@ export async function findOrCreateSimpliGameFolder(
 /** Initiate a Drive resumable upload session for a new file in the
  *  SimpliGame folder. Returns the session URL the browser PUTs chunks
  *  to (the URL itself is the capability — no auth header is needed or
- *  allowed on the chunk requests). */
+ *  allowed on the chunk requests).
+ *
+ *  The Origin header below is REQUIRED — do not remove it. Google
+ *  binds CORS for the resumable session to the Origin sent on THIS
+ *  initiation request. The browser's chunk PUTs carry a Content-Range
+ *  header, which triggers a CORS preflight; if the session was not
+ *  initiated with the app's Origin, Google answers the preflight
+ *  without CORS approval and the browser blocks every chunk as a
+ *  generic "network error" (XHR status 0) even though the session URL
+ *  is valid and the user's connection is fine. */
 export async function initiateResumableUpload(
   accessToken: string,
   input: { folderId: string; name: string; mimeType: string; sizeBytes: number },
@@ -213,6 +222,7 @@ export async function initiateResumableUpload(
     accessToken,
     { name: input.name, parents: [input.folderId], mimeType: input.mimeType },
     {
+      Origin: publicOrigin(),
       'X-Upload-Content-Type': input.mimeType,
       'X-Upload-Content-Length': String(input.sizeBytes),
     },
