@@ -4,6 +4,7 @@ import path from 'path';
 import {
   authenticate,
   authOf,
+  can,
   canAccessTeam,
   cleanEmail,
   cleanName,
@@ -583,8 +584,10 @@ app.post(
 // Owner-only coach management. Responses never include password_hash.
 // Coaches get a role + team assignments; they see only their teams.
 async function loadCoaches(db: ReturnType<typeof getPool>, orgId: string) {
+  // Parent accounts (migration 012) are NOT coaches — they are managed
+  // from the player profile's Parents section, never listed here.
   const users = await db.query(
-    'SELECT id, org_id, email, name, role, created_at FROM users WHERE org_id = $1 ORDER BY created_at ASC',
+    "SELECT id, org_id, email, name, role, created_at FROM users WHERE org_id = $1 AND role <> 'parent' ORDER BY created_at ASC",
     [orgId],
   );
   const userIds = users.rows.map((u) => u.id as string);
@@ -705,6 +708,13 @@ app.patch(
       res.status(400).json({ ok: false, error: 'The owner account cannot be changed here.' });
       return;
     }
+    if (target.rows[0].role === 'parent') {
+      res.status(400).json({
+        ok: false,
+        error: 'Parent accounts are managed from the player profile (Parents section), not here.',
+      });
+      return;
+    }
     if (targetId === req.auth!.user.id) {
       res.status(400).json({ ok: false, error: 'You cannot change your own account here.' });
       return;
@@ -785,6 +795,13 @@ app.delete(
       res.status(400).json({ ok: false, error: 'The owner account cannot be deleted.' });
       return;
     }
+    if (target.rows[0].role === 'parent') {
+      res.status(400).json({
+        ok: false,
+        error: 'Parent accounts are managed from the player profile (Parents section), not here.',
+      });
+      return;
+    }
     if (targetId === req.auth!.user.id) {
       res.status(400).json({ ok: false, error: 'You cannot delete your own account.' });
       return;
@@ -817,6 +834,13 @@ app.post(
       res.status(404).json({ ok: false, error: 'Coach not found.' });
       return;
     }
+    if (target.rows[0].role === 'parent') {
+      res.status(400).json({
+        ok: false,
+        error: 'Parent passwords are reset from the player profile (Parents section), not here.',
+      });
+      return;
+    }
     if (target.rows[0].role === 'owner' || targetId === req.auth!.user.id) {
       res.status(403).json({ ok: false, error: 'Use change-password for your own account.' });
       return;
@@ -837,6 +861,493 @@ app.post(
       client.release();
     }
     res.json({ ok: true, reset: true });
+  }),
+);
+
+// ------------------------------------------------------ parent accounts
+// Real parent logins (migration 012 — the owner chose real accounts
+// over token links). A parent is a user with role 'parent', created by
+// a head coach from a player's profile and linked to one or more
+// players (parent_players) — their kids. Parents hold NO coach
+// permissions (the role ranks below stat_crew, so every coach action
+// 403s); their reads go through GET /api/parent/home, scoped
+// server-side to their linked players only.
+//
+// Management is head_coach+ ('parent_manage') and team-scoped like
+// everything else: a head coach manages the parents of players on
+// their assigned teams; the owner manages every parent in the org.
+// Asking about a parent outside that scope is a 404, exactly like an
+// unassigned team.
+const PARENT_MIGRATION_MESSAGE =
+  'Parent accounts are not set up yet — run migrations/012_parent_accounts.sql in the Neon SQL Editor, then restart.';
+
+function isMissingParentSchema(err: unknown): boolean {
+  const code = (err as { code?: string }).code;
+  return code === '42P01' || code === '42703';
+}
+
+/** A player the caller may see (owner: any org player; coach: players
+ *  on assigned teams). Mirrors getOrgPlayer's scoping. */
+async function getAccessiblePlayer(
+  db: ReturnType<typeof getPool>,
+  auth: ReturnType<typeof authOf>,
+  playerId: string,
+) {
+  const row = await db.query(
+    `SELECT p.* FROM players p JOIN teams t ON t.id = p.team_id
+     WHERE t.org_id = $1 AND p.id = $2${auth.teamIds ? ' AND t.id = ANY($3)' : ''}`,
+    auth.teamIds ? [auth.user.org_id, playerId, auth.teamIds] : [auth.user.org_id, playerId],
+  );
+  return row.rows[0] ?? null;
+}
+
+/** Parents visible to the caller, each with their linked player IDs.
+ *  Owner: every parent in the org. Head coach: parents linked to at
+ *  least one player on an assigned team. Never includes password_hash
+ *  or any credential. */
+async function loadOrgParents(
+  db: ReturnType<typeof getPool>,
+  orgId: string,
+  auth: ReturnType<typeof authOf>,
+) {
+  const parents =
+    auth.teamIds === null
+      ? await db.query(
+          `SELECT id, org_id, email, name, role, created_at FROM users
+           WHERE org_id = $1 AND role = 'parent' ORDER BY created_at ASC`,
+          [orgId],
+        )
+      : await db.query(
+          `SELECT DISTINCT u.id, u.org_id, u.email, u.name, u.role, u.created_at
+           FROM users u
+           JOIN parent_players pp ON pp.user_id = u.id
+           JOIN players p ON p.id = pp.player_id
+           WHERE u.org_id = $1 AND u.role = 'parent' AND p.team_id = ANY($2)
+           ORDER BY u.created_at ASC`,
+          [orgId, auth.teamIds],
+        );
+  const ids = parents.rows.map((u) => u.id as string);
+  const links =
+    ids.length > 0
+      ? await db.query('SELECT user_id, player_id FROM parent_players WHERE user_id = ANY($1)', [ids])
+      : { rows: [] as { user_id: string; player_id: string }[] };
+  const playerIdsByUser = new Map<string, string[]>();
+  for (const l of links.rows) {
+    const list = playerIdsByUser.get(l.user_id) ?? [];
+    list.push(l.player_id);
+    playerIdsByUser.set(l.user_id, list);
+  }
+  return parents.rows.map((u) => ({ ...publicUser(u), playerIds: playerIdsByUser.get(u.id) ?? [] }));
+}
+
+/** May the caller manage this parent? Owner: any parent in the org.
+ *  Head coach: a parent linked to a player on an assigned team. */
+async function canManageParent(
+  db: ReturnType<typeof getPool>,
+  auth: ReturnType<typeof authOf>,
+  parentId: string,
+): Promise<boolean> {
+  const row = await db.query(
+    "SELECT id FROM users WHERE id = $1 AND org_id = $2 AND role = 'parent'",
+    [parentId, auth.user.org_id],
+  );
+  if (row.rows.length === 0) return false;
+  if (auth.teamIds === null) return true;
+  const link = await db.query(
+    `SELECT 1 FROM parent_players pp JOIN players p ON p.id = pp.player_id
+     WHERE pp.user_id = $1 AND p.team_id = ANY($2) LIMIT 1`,
+    [parentId, auth.teamIds],
+  );
+  return link.rows.length > 0;
+}
+
+app.get(
+  '/api/parents',
+  requirePermission('parent_manage'),
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const auth = authOf(req);
+    try {
+      const org = await getOrCreateOrganization(auth.user.org_id);
+      res.json({ ok: true, parents: await loadOrgParents(db, org.id, auth) });
+    } catch (err) {
+      if (isMissingParentSchema(err)) {
+        res.status(503).json({ ok: false, error: PARENT_MIGRATION_MESSAGE });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+// Create a parent account AND link it to a player in one step (same
+// validation + scrypt hashing as coach creation — POST /api/coaches).
+app.post(
+  '/api/parents',
+  requirePermission('parent_manage'),
+  asyncHandler(async (req, res) => {
+    const { email, password, name, player_id } = req.body ?? {};
+    const cleanMail = cleanEmail(email);
+    const cleanPass = cleanPassword(password);
+    const cleanFullName = cleanName(name);
+    if (!cleanMail) {
+      res.status(400).json({ ok: false, error: 'Enter a valid email address.' });
+      return;
+    }
+    if (!cleanPass) {
+      res.status(400).json({ ok: false, error: 'Password must be at least 8 characters.' });
+      return;
+    }
+    if (!cleanFullName) {
+      res.status(400).json({ ok: false, error: 'Name is required (100 characters or fewer).' });
+      return;
+    }
+    if (typeof player_id !== 'string' || !player_id) {
+      res.status(400).json({ ok: false, error: 'player_id is required.' });
+      return;
+    }
+    const db = getPool();
+    const auth = authOf(req);
+    try {
+      const org = await getOrCreateOrganization(auth.user.org_id);
+      const player = await getAccessiblePlayer(db, auth, player_id);
+      if (!player) {
+        res.status(404).json({ ok: false, error: 'Player not found.' });
+        return;
+      }
+      const client = await db.connect();
+      try {
+        await client.query('BEGIN');
+        const user = await client.query(
+          `INSERT INTO users (org_id, email, password_hash, name, role)
+           VALUES ($1, $2, $3, $4, 'parent')
+           RETURNING id, org_id, email, name, role, created_at`,
+          [org.id, cleanMail, hashPassword(cleanPass), cleanFullName],
+        );
+        await client.query('INSERT INTO parent_players (user_id, player_id) VALUES ($1, $2)', [
+          user.rows[0].id,
+          player_id,
+        ]);
+        await client.query('COMMIT');
+        const parents = await loadOrgParents(db, org.id, auth);
+        res.status(201).json({ ok: true, parent: parents.find((p) => p.id === user.rows[0].id) });
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+    } catch (err) {
+      if ((err as { code?: string }).code === '23505') {
+        res.status(400).json({ ok: false, error: 'That email is already registered.' });
+        return;
+      }
+      if (isMissingParentSchema(err)) {
+        res.status(503).json({ ok: false, error: PARENT_MIGRATION_MESSAGE });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+app.get(
+  '/api/players/:playerId/parents',
+  requirePermission('parent_manage'),
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const auth = authOf(req);
+    try {
+      const player = await getAccessiblePlayer(db, auth, String(req.params.playerId));
+      if (!player) {
+        res.status(404).json({ ok: false, error: 'Player not found.' });
+        return;
+      }
+      const rows = await db.query(
+        `SELECT u.id, u.org_id, u.email, u.name, u.role, u.created_at
+         FROM users u JOIN parent_players pp ON pp.user_id = u.id
+         WHERE pp.player_id = $1 AND u.org_id = $2
+         ORDER BY u.created_at ASC`,
+        [player.id, auth.user.org_id],
+      );
+      res.json({ ok: true, parents: rows.rows.map((u) => publicUser(u)) });
+    } catch (err) {
+      if (isMissingParentSchema(err)) {
+        res.status(503).json({ ok: false, error: PARENT_MIGRATION_MESSAGE });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+// Link an EXISTING parent account to another player (a second kid, or
+// a second parent for the same kid is the create flow above). The gate
+// is the PLAYER's accessibility — linking this parent to your player
+// is exactly what puts them in your management scope.
+app.post(
+  '/api/parents/:id/link',
+  requirePermission('parent_manage'),
+  asyncHandler(async (req, res) => {
+    const { player_id } = req.body ?? {};
+    if (typeof player_id !== 'string' || !player_id) {
+      res.status(400).json({ ok: false, error: 'player_id is required.' });
+      return;
+    }
+    const db = getPool();
+    const auth = authOf(req);
+    try {
+      const parentId = String(req.params.id);
+      const parent = await db.query(
+        "SELECT id FROM users WHERE id = $1 AND org_id = $2 AND role = 'parent'",
+        [parentId, auth.user.org_id],
+      );
+      if (parent.rows.length === 0) {
+        res.status(404).json({ ok: false, error: 'Parent not found.' });
+        return;
+      }
+      const player = await getAccessiblePlayer(db, auth, player_id);
+      if (!player) {
+        res.status(404).json({ ok: false, error: 'Player not found.' });
+        return;
+      }
+      await db.query(
+        'INSERT INTO parent_players (user_id, player_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [parentId, player_id],
+      );
+      res.json({ ok: true, linked: true });
+    } catch (err) {
+      if (isMissingParentSchema(err)) {
+        res.status(503).json({ ok: false, error: PARENT_MIGRATION_MESSAGE });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+app.delete(
+  '/api/parents/:id/link/:playerId',
+  requirePermission('parent_manage'),
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const auth = authOf(req);
+    try {
+      const parentId = String(req.params.id);
+      const parent = await db.query(
+        "SELECT id FROM users WHERE id = $1 AND org_id = $2 AND role = 'parent'",
+        [parentId, auth.user.org_id],
+      );
+      if (parent.rows.length === 0) {
+        res.status(404).json({ ok: false, error: 'Parent not found.' });
+        return;
+      }
+      const player = await getAccessiblePlayer(db, auth, String(req.params.playerId));
+      if (!player) {
+        res.status(404).json({ ok: false, error: 'Player not found.' });
+        return;
+      }
+      await db.query('DELETE FROM parent_players WHERE user_id = $1 AND player_id = $2', [
+        parentId,
+        player.id,
+      ]);
+      res.json({ ok: true, unlinked: true });
+    } catch (err) {
+      if (isMissingParentSchema(err)) {
+        res.status(503).json({ ok: false, error: PARENT_MIGRATION_MESSAGE });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+// Delete a parent account (sessions + player links cascade). BLOCKED
+// while the parent owns imported videos: those rows point at the
+// parent's own Drive connection, and deleting the account would
+// orphan the library entries coaches may already have clipped into
+// reels. Delete the imports first (Highlight Builder library), then
+// the account.
+app.delete(
+  '/api/parents/:id',
+  requirePermission('parent_manage'),
+  asyncHandler(async (req, res) => {
+    const db = getPool();
+    const auth = authOf(req);
+    try {
+      const parentId = String(req.params.id);
+      if (!(await canManageParent(db, auth, parentId))) {
+        res.status(404).json({ ok: false, error: 'Parent not found.' });
+        return;
+      }
+      const videos = await db
+        .query('SELECT COUNT(*)::int AS n FROM imported_videos WHERE owner_user_id = $1', [parentId])
+        .catch((err) => {
+          // Migration 011 not run → no imports can exist.
+          if (isMissingParentSchema(err)) return { rows: [{ n: 0 }] };
+          throw err;
+        });
+      if (videos.rows[0].n > 0) {
+        res.status(400).json({
+          ok: false,
+          error:
+            'This parent has imported videos in the library — delete their imports first (Highlight Builder), then remove the account.',
+        });
+        return;
+      }
+      await db.query('DELETE FROM users WHERE id = $1', [parentId]);
+      res.json({ ok: true, deleted: true });
+    } catch (err) {
+      if (isMissingParentSchema(err)) {
+        res.status(503).json({ ok: false, error: PARENT_MIGRATION_MESSAGE });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+// Head-coach password reset for a parent they manage — mirrors the
+// owner→coach reset (sets the hash, invalidates ALL of the parent's
+// sessions). Share the new password out-of-band; there is no
+// email-based reset.
+app.post(
+  '/api/parents/:id/reset-password',
+  requirePermission('parent_manage'),
+  asyncHandler(async (req, res) => {
+    const { newPassword } = req.body ?? {};
+    const cleanNew = cleanPassword(newPassword);
+    if (!cleanNew) {
+      res.status(400).json({ ok: false, error: 'New password must be at least 8 characters.' });
+      return;
+    }
+    const db = getPool();
+    const auth = authOf(req);
+    try {
+      const parentId = String(req.params.id);
+      if (!(await canManageParent(db, auth, parentId))) {
+        res.status(404).json({ ok: false, error: 'Parent not found.' });
+        return;
+      }
+      const client = await db.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query('UPDATE users SET password_hash = $1 WHERE id = $2', [
+          hashPassword(cleanNew),
+          parentId,
+        ]);
+        await client.query('DELETE FROM sessions WHERE user_id = $1', [parentId]);
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+      res.json({ ok: true, reset: true });
+    } catch (err) {
+      if (isMissingParentSchema(err)) {
+        res.status(503).json({ ok: false, error: PARENT_MIGRATION_MESSAGE });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+// ------------------------------------------------------- parent's home
+// The parent's whole world in one call, scoped to their linked
+// players: player + team, the recruiting profile (bio/measurables +
+// aggregated stats + highlights — the same computation coaches see),
+// the published public-profile path when one exists, and the team's
+// PUBLISHED games with their public watch paths. Nothing else about
+// the org leaves the API — no rosters, no other players, no drafts.
+app.get(
+  '/api/parent/home',
+  asyncHandler(async (req, res) => {
+    const auth = authOf(req);
+    if (auth.user.role !== 'parent') {
+      res.status(403).json({ ok: false, error: 'Parent accounts only.' });
+      return;
+    }
+    const db = getPool();
+    try {
+      const org = await getOrCreateOrganization(auth.user.org_id);
+      const linked = await db.query(
+        `SELECT p.id, p.name, p.jersey_number, p.position, p.team_id,
+                t.name AS team_name, t.sport AS team_sport
+         FROM parent_players pp
+         JOIN players p ON p.id = pp.player_id
+         JOIN teams t ON t.id = p.team_id
+         WHERE pp.user_id = $1 AND t.org_id = $2
+         ORDER BY p.created_at ASC`,
+        [auth.user.id, org.id],
+      );
+      const players = [];
+      for (const p of linked.rows) {
+        const profileRow = await db.query('SELECT * FROM player_profiles WHERE player_id = $1', [p.id]);
+        const prof = profileRow.rows[0] ?? null;
+        const stats = await computePlayerStats(db, p.id as string);
+        const games = await db.query(
+          `SELECT id, opponent, status, our_score, opponent_score, period_label, created_at, publish_token
+           FROM games
+           WHERE team_id = $1 AND published = true AND publish_token IS NOT NULL
+           ORDER BY created_at DESC
+           LIMIT 20`,
+          [p.team_id],
+        );
+        players.push({
+          id: p.id as string,
+          name: p.name as string,
+          jersey_number: p.jersey_number as string,
+          position: p.position as string,
+          team_id: p.team_id as string,
+          team_name: p.team_name as string,
+          team_sport: p.team_sport as string,
+          profile: prof
+            ? {
+                bio: prof.bio as string,
+                height: prof.height as string,
+                graduation_year: prof.graduation_year as string,
+                positions_text: prof.positions_text as string,
+                school: prof.school as string,
+                club_team: prof.club_team as string,
+              }
+            : null,
+          profile_public_path:
+            prof && prof.profile_published && prof.profile_token
+              ? `/profile/${prof.profile_token as string}`
+              : null,
+          stats,
+          games: games.rows.map((g) => ({
+            id: g.id as string,
+            opponent: g.opponent as string,
+            status: g.status as string,
+            our_score: g.our_score as number,
+            opponent_score: g.opponent_score as number,
+            period_label: g.period_label as string,
+            created_at: g.created_at as string,
+            watch_path: `/watch/${g.publish_token as string}`,
+          })),
+        });
+      }
+      res.json({
+        ok: true,
+        organization: {
+          id: org.id,
+          name: org.name,
+          primary_color: org.primary_color,
+          secondary_color: org.secondary_color,
+        },
+        players,
+      });
+    } catch (err) {
+      if (isMissingParentSchema(err)) {
+        res.status(503).json({ ok: false, error: PARENT_MIGRATION_MESSAGE });
+        return;
+      }
+      throw err;
+    }
   }),
 );
 
@@ -2732,8 +3243,10 @@ app.get(
 );
 
 // ------------------------------------------- Google Drive video import
-// Imported videos live in each coach's OWN Google Drive (drive.file
-// scope — see drive.ts and migration 011). Upload flow: the server
+// Imported videos live in each uploader's OWN Google Drive (drive.file
+// scope — see drive.ts and migration 011). Parents (migration 012)
+// import too, scoped to their linked players' teams — see the init
+// handler. Upload flow: the server
 // initiates a Drive resumable session with the uploader's access
 // token, the browser PUTs the file straight to Google in chunks, then
 // /complete verifies the file and marks the row ready. Playback uses
@@ -2795,9 +3308,26 @@ function canSeeImportedVideo(
   return typeof row.team_id === 'string' && auth.teamIds.includes(row.team_id);
 }
 
+/** Gate for the import write endpoints: coaches need 'reels'
+ *  (head_coach+); parents (migration 012) import too — the handlers
+ *  scope a parent to the teams of their linked players and to their
+ *  own uploads, so the permission gate alone is not the enforcement. */
+function requireReelsOrParent(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction,
+): void {
+  const role = req.auth?.user.role;
+  if (role === 'parent' || (role !== undefined && can(role, 'reels'))) {
+    next();
+    return;
+  }
+  res.status(403).json({ ok: false, error: 'Your role does not allow this action.' });
+}
+
 app.post(
   '/api/imported-videos/init',
-  requirePermission('reels'),
+  requireReelsOrParent,
   asyncHandler(async (req, res) => {
     const auth = authOf(req);
     const { title, team_id, mime_type, size_bytes } = req.body ?? {};
@@ -2830,11 +3360,42 @@ app.post(
           team_id,
           org.id,
         ]);
-        if (team.rows.length === 0 || !canAccessTeam(auth, team_id)) {
+        if (team.rows.length === 0) {
+          res.status(404).json({ ok: false, error: 'Team not found.' });
+          return;
+        }
+        if (auth.user.role === 'parent') {
+          // Parents import ONLY for a team one of their linked
+          // players plays on (migration 012) — anything else is the
+          // same 404 as a team that doesn't exist.
+          let linked: { rows: unknown[] };
+          try {
+            linked = await db.query(
+              `SELECT 1 FROM parent_players pp JOIN players p ON p.id = pp.player_id
+               WHERE pp.user_id = $1 AND p.team_id = $2 LIMIT 1`,
+              [auth.user.id, team_id],
+            );
+          } catch (err) {
+            if (isMissingParentSchema(err)) {
+              res.status(503).json({ ok: false, error: PARENT_MIGRATION_MESSAGE });
+              return;
+            }
+            throw err;
+          }
+          if (linked.rows.length === 0) {
+            res.status(404).json({ ok: false, error: 'Team not found.' });
+            return;
+          }
+        } else if (!canAccessTeam(auth, team_id)) {
           res.status(404).json({ ok: false, error: 'Team not found.' });
           return;
         }
         teamId = team_id;
+      } else if (auth.user.role === 'parent') {
+        // A parent's import always belongs to a linked player's team —
+        // a team-less import would be invisible to the team's coaches.
+        res.status(400).json({ ok: false, error: 'Choose the team this video belongs to.' });
+        return;
       }
       const accessToken = await freshDriveAccessToken(db, auth.user.id);
       if (!accessToken) {
@@ -2880,7 +3441,7 @@ app.post(
 
 app.post(
   '/api/imported-videos/:id/complete',
-  requirePermission('reels'),
+  requireReelsOrParent,
   asyncHandler(async (req, res) => {
     const auth = authOf(req);
     const db = getPool();
@@ -2974,7 +3535,7 @@ app.get(
 
 app.delete(
   '/api/imported-videos/:id',
-  requirePermission('reels'),
+  requireReelsOrParent,
   asyncHandler(async (req, res) => {
     const auth = authOf(req);
     const db = getPool();
